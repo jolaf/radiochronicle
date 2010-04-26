@@ -1,4 +1,4 @@
-#summary One-sentence summary of this page.
+#summary what do we want to do
 
 = Хроники радиопереговоров =
 Глобальная задача — сделать так, чтобы радиопереговоры с игры не канули в Лету. 
