@@ -1,187 +1,197 @@
-#requires http://people.csail.mit.edu/hubert/pyaudio/
-#version 0.2
+#
+# RadioChronicle
+#
+# Version 0.3
+#
+# Requires PyAudio: http://people.csail.mit.edu/hubert/pyaudio/
+#
 
-import pyaudio
-import wave
-import sys
 import struct
+import sys
 import thread
+import wave
+
 from time import strftime
 
+from pyaudio import *
 
-#configurable parameters
-SILENCE_SECONDS = 2 #The max time we wait for the speach to restart.
-FADEOUT_SECONDS = 0.5 #The time for a good fade out
-SILENCE_LEVEL = 100  #The level of sound that is concedered as silence
+# Defines
+PACK_FORMATS = { 8 : 'b', 16 : '<h', 32 : '<i' }
+
+STEREO = 0
+LEFT = 1
+RIGHT = 2
+MONO = 3
+
+# Configurable parameters
+FILENAME_FORMAT = '%Y%m%d-%H%M%S.wav'
+
+SILENCE_SECONDS = 2	# The max time we wait for the transmission to restart
+FADEOUT_SECONDS = 0.1	# The length of silence at the end of the recorded transmission
+SILENCE_LEVEL = 0	# The max sound level (in percent) that is treated as silence
+
+INPUT_DEVICE = None	# May be set to use non-default device
+OUTPUT_DEVICE = None	# May be set to use non-default device
+INPUT_CHANNELS = 2	# Number of channels in input device
+AUDIO_BITS = 16		# Recording quantization in bits (8/16/24/32)
+SAMPLE_RATE = 44100	# Sampling frequency
+
+CHANNEL = MONO		# Input channel to monitor (LEFT, RIGHT, STEREO, MONO)
+
+CHUNK_SIZE = 1024	# Number of frames to process at once
 DIRECT_OUTPUT = False
-FILENAME_FORMAT = "%Y%m%d-%H%M%S"
 
-#unconfigurable parameters
-chunk = 1024
-FORMAT = pyaudio.paInt16
-CHANNELS = 1 #This one should be configurable, but it will be fixed later
-RATE = 44100
+# Configuration
+assert AUDIO_BITS in (8, 16, 32)
+AUDIO_BYTES = AUDIO_BITS / 8
+MAX_VOLUME = 1 << (AUDIO_BITS - 1)
+
+FRAMES_IN_SECOND = SAMPLE_RATE / CHUNK_SIZE
+BLOCK_SIZE = CHUNK_SIZE * AUDIO_BYTES * (2 if CHANNEL == STEREO else 1)
+
+audio = PyAudio()
+
+AUDIO_FORMAT = audio.get_format_from_width(AUDIO_BYTES, False)
+PACK_FORMAT = PACK_FORMATS[AUDIO_BITS]
 
 #script-status parameters
 inLoop = True 
-isRecording = False
-lastRecordingTrack = False
+recording = False
+quitAfterRecording = False
+lastSecondVolumes = [0] * FRAMES_IN_SECOND
 
-lastSecondArray=[]
-lastSecondFramesCount=RATE/chunk
-for i in range (0,lastSecondFramesCount):
-    lastSecondArray.append(0)
+def mean(iterable):
+    if not iterable:
+        return 0
+    sum = 0
+    for (n, i) in enumerate(iterable, 1):
+        sum += i
+    return sum / n
 
+def printDeviceInfo():
+    devices = tuple(audio.get_device_info_by_index(i) for i in xrange(p.get_device_count()))
+    print "\nDetected input devices:"
+    for device in filter(lambda d: d['maxInputChannels'], devices):
+        print "%d: %s" % (device['index'], device['name'])
+    print "\nDetected output devices:"
+    for device in filter(lambda d: d['maxOutputChannels'], devices):
+        print "%d: %s" % (device['index'], device['name'])
 
-def update_params():
+def commandConsole():
     global inLoop
     global DIRECT_OUTPUT
-    global isRecording
-    global lastRecordingTrack
+    global recording
+    global quitAfterRecording
     global SILENCE_LEVEL
-    global lastSecondArray
-    global chunk
+    global lastSecondVolumes
+    global CHUNK_SIZE
     
     while inLoop:
-        inp=raw_input().split(" ")
-        if inp[0]=="mean":
-            print (sum(lastSecondArray)/(len(lastSecondArray)*chunk))
-        if inp[0]=="quit":
-            inLoop=False
-        if inp[0]=="output":
-            if len(inp)==1:
-                print "Direct output status: "+str(DIRECT_OUTPUT)    
+        inp = raw_input().split(' ')
+        command = inp[0]
+        if inp[0] == "mean":
+            print "%d%%" % mean(lastSecondVolumes)
+        elif inp[0] == "quit":
+            inLoop = False
+        elif inp[0] == "output":
+            if len(inp) < 2:
+                print "Direct output status: %s" % DIRECT_OUTPUT
             else:
-                if inp[1]=="True":
-                    DIRECT_OUTPUT=True;
-                if inp[1]=="False":
-                    DIRECT_OUTPUT=False;
-                print "Direct output set to: "+str(DIRECT_OUTPUT)
-        if inp[0]=="last":
-            if isRecording:
-                lastRecordingTrack=True
+                DIRECT_OUTPUT = bool(inp[1])
+                print "Direct output set to: %s" % DIRECT_OUTPUT
+        elif inp[0] == "last":
+            if recording:
+                quitAfterRecording = True
                 print "Recording the last track"
             else:
-                inLoop=False
-
-        if inp[0]=="level":
-            if len(inp)==1:
-                print "Current silence level value:"+str(SILENCE_LEVEL)    
+                inLoop = False
+        elif inp[0] == "level":
+            if len(inp) < 2:
+                print "Current silence level: %d" % SILENCE_LEVEL
             else:
                 try:
-                    SILENCE_LEVEL=int(inp[1])
-                    print "New silence level value:"+str(SILENCE_LEVEL)
+                    SILENCE_LEVEL = int(inp[1])
+                    assert 0 <= SILENCE_LEVEL <= 100
+                    print "New silence level: %d" % SILENCE_LEVEL
                 except:
-				    print "Parameter value could not be parsed"
+                    print "Bad value, expected 0-100"
 
-thread.start_new_thread(update_params,())
+thread.start_new_thread(commandConsole,())
 
-
-p = pyaudio.PyAudio()
-
-stream = p.open(format = FORMAT,
-                channels = CHANNELS,
-                rate = RATE,
+stream = audio.open(format = AUDIO_FORMAT,
+                channels = 1 if CHANNEL == MONO else 2,
+                rate = SAMPLE_RATE,
                 input = True,
                 output = True, #this is for the direct sound output
-                frames_per_buffer = chunk)
+                frames_per_buffer = CHUNK_SIZE)
 
-
-
-
-stepToStop=int(float(RATE/chunk) * SILENCE_SECONDS)
-fadeoutSize=int(float(RATE/chunk) * FADEOUT_SECONDS)
-stepsOfSilence=0
-maxSignal=0
-sampleLength=-1
+chunksToStop = int(float(SAMPLE_RATE / CHUNK_SIZE) * SILENCE_SECONDS)
+chunksOfFadeout = int(float(SAMPLE_RATE / CHUNK_SIZE) * FADEOUT_SECONDS)
 
 print "Ready to work"
 
-i=0
+frameInSecond=0
 
 while inLoop:
-    #we have just recived a new part of sound data
-    data = stream.read(chunk)
-    if DIRECT_OUTPUT:
-        stream.write(data, chunk) #this wires the input to the output
+    # We've just recived a new part of sound data
+    data = stream.read(CHUNK_SIZE)
+    assert len(data) == BLOCK_SIZE
+
+    if CHANNEL in (LEFT, RIGHT):
+        data = ''.join(data[i : i + AUDIO_BYTES] for i in xrange(0 if CHANNEL == LEFT else AUDIO_BYTES, len(data), 2 * AUDIO_BYTES))
+
+    if DIRECT_OUTPUT: # Provide monitor output
+        # ToDo: Need separate output stream to allow only left/right channel output
+        stream.write(data, CHUNK_SIZE)
     
-    #let's see if it contains something loud enought
-    summ=0;    
-    for j in range(0,len(data)/2):
-        summ=summ+abs(struct.unpack("h", data[2*j]+data[2*j+1])[0])
-    
-    lastSecondArray[i]=summ        #logging the sound volume 
-    i=(i+1)%lastSecondFramesCount  #during the last second
+    # Let's see if data contains something loud enough
+    volume = (mean(abs(struct.unpack(PACK_FORMAT, data[i : i + AUDIO_BYTES])[0]) for i in xrange(0, len(data), AUDIO_BYTES)) * 100 + MAX_VOLUME / 2) / MAX_VOLUME
+    lastSecondVolumes[frameInSecond] = volume # Logging the sound volume during the last second
+    frameInSecond = (frameInSecond + 1) % FRAMES_IN_SECOND
                  
-    if (((summ/chunk)>SILENCE_LEVEL) and (not(isRecording))):
-        #if the signal is strong and we do not yet record, let's start
-        WAVE_OUTPUT_FILENAME=strftime(FILENAME_FORMAT)+".wav";
-        print WAVE_OUTPUT_FILENAME+" record started"
-        all = []
-        all.append(data)
-        isRecording=True
-        stepsOfSilence=0
-        maxSignal=summ/chunk #storing the max signal value
-        sampleLength=-1
-    
-    if (((summ/chunk)>SILENCE_LEVEL) and (isRecording)):
-        #if we allready are recording, let's proceede
-        all.append(data)
-        stepsOfSilence=0
-        sampleLength=-1
-        
-        if (summ/chunk)>maxSignal:  #storing the max signal value
-            maxSignal=summ/chunk
+    if volume >= SILENCE_LEVEL:
+        if not recording: # Start recording
+            fileName = strftime(FILENAME_FORMAT)
+            print "%s recording started" % fileName
+            recording = True
+            sample = ''
+            maxVolume = volume
+        elif volume > maxVolume:
+            maxVolume = volume
+        sample += data
+        chunksOfSilence = 0
+        sampleLength = -1
+    elif recording: # Check for stop recording
+        sample += data
+        chunksOfSilence += 1
+        if sampleLength < 0 and chunksOfSilence > min(chunksOfFadeout, chunksToStop):
+            sampleLength = len(sample)
+        if chunksOfSilence > chunksToStop: # Stopping recording
+            recording = False
+            wf = wave.open(fileName, 'wb')
+            wf.setnchannels(2 if CHANNEL == STEREO else 1)
+            wf.setsampwidth(AUDIO_BYTES)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(sample[:sampleLength]) # Removing extra silence at the end
+            wf.close()
+            sample = ''
+            print "Recording finished, max volume %d, %d seconds" % (maxVolume, sampleLength / (SAMPLE_RATE * AUDIO_BYTES * (2 if CHANNEL == STEREO else 1)))
+            if quitAfterRecording:
+                inLoop = False
 
-    if (((summ/chunk)<=SILENCE_LEVEL) and (isRecording)):
-        #if there is no more signal we do wait
-        all.append(data)      
-        if (sampleLength<0)and(stepsOfSilence==fadeoutSize):
-            sampleLength=len(all)
-
-        stepsOfSilence=stepsOfSilence+1
-        
-        if (stepsOfSilence>stepToStop):
-            #oops, the silence was too long. it's over now
-            isRecording=False
-            if sampleLength<0:
-                sampleLength=len(all)
-            data = ''.join(all[0:sampleLength]) #the sample with no silence at the end 
-            wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(p.get_sample_size(FORMAT))
-            wf.setframerate(RATE)
-            wf.writeframes(data)
-            wf.close()  
-            all = []
-            print "Record finished. File length: "+str(len(data)/(RATE*2))+" seconds"
-            print "Max signal value: "+str(maxSignal) 
-            if lastRecordingTrack:
-                inLoop=False         
-
-# the listening is over
-        
-if isRecording:
-    #hey, we have some unfinished job
-    isRecording=False
-    if sampleLength<0:
-        sampleLength=len(all)
-    data = ''.join(all[0:sampleLength]) #the sample with no silence at the end 
-    wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
-    wf.setnchannels(CHANNELS)
-    wf.setsampwidth(p.get_sample_size(FORMAT))
-    wf.setframerate(RATE)
-    wf.writeframes(data)
+if recording: # Listening was interrupted in the middle of recording
+    recording = False
+    if sampleLength < 0:
+        sampleLength = len(sample)
+    wf = wave.open(fileName, 'wb')
+    wf.setnchannels(2 if CHANNEL == STEREO else 1)
+    wf.setsampwidth(AUDIO_BYTES)
+    wf.setframerate(SAMPLE_RATE)
+    wf.writeframes(sample[:sampleLength]) # Removing extra silence at the end
     wf.close()  
-    all = []
-    print "Record finished. File length: "+str(len(data)/(RATE*2))+" seconds"          
-    print "Max signal value: "+str(maxSignal) 
+    print "Recording finished, max volume %d, %d seconds" % (maxVolume, sampleLength / (SAMPLE_RATE * AUDIO_BYTES * (2 if CHANNEL == STEREO else 1)))
 
 print "* done listening"
 
 stream.close()
-p.terminate()
-
-
-
-
+audio.terminate()
