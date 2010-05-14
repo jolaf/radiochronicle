@@ -6,18 +6,17 @@
 # Requires PyAudio: http://people.csail.mit.edu/hubert/pyaudio/
 #
 
-import logging
-import logging.config
-import sys
-import wave
-
 from ConfigParser import ConfigParser, NoOptionError, NoSectionError
 from getopt import getopt, GetoptError
+from logging import getLogger, StreamHandler
+from logging.config import fileConfig
 from signal import signal, SIGTERM
 from struct import unpack
+from sys import argv, exit
 from thread import start_new_thread
 from time import sleep, strftime
 from traceback import format_exc
+import wave
 
 TITLE = "RadioChronicle v0.3  http://code.google.com/p/radiochronicle"
 DEFAULT_CONFIG_FILE_NAME = 'rc.conf'
@@ -68,7 +67,7 @@ class RadioChronicle:
         try:
             configFileName = DEFAULT_CONFIG_FILE_NAME
             try:
-                (options, args) = getopt(sys.argv[1:], 'c:vh', ['config=', 'help'])
+                (options, args) = getopt(argv[1:], 'c:vh', ['config=', 'help'])
             except GetoptError, e:
                 self.usage(e)
             for (option, value) in options:
@@ -80,21 +79,20 @@ class RadioChronicle:
             # ToDo: What if config file is absent? Use config.readfp? Print warning?
             config.read(configFileName) # Doesn't produce errors if file is missing or damaged
             if config.has_section('loggers'):
-                logging.config.fileConfig(configFileName)
-            self.logger = logging.getLogger()
+                fileConfig(configFileName)
+            self.logger = getLogger()
             if not self.logger.handlers:
                 # ToDo: This doesn't work - if config file is absent, logging works poorly, needs fixing
-                handler = logging.StreamHandler()
-                handler.setLevel(logging.INFO)
-                handler.setFormatter(logging.Formatter('%(message)s'))
-                self.logger.addHandler(handler)
+                self.logger.addHandler(StreamHandler())
             signal(SIGTERM, self.sigTerm)
         except Exception, e:
             print "%s\n\nConfiguration error: %s" % (TITLE, e)
-            sys.exit(1)
+            exit(1)
         # Above this point, use print for diagnostics
         # From this point on, we have self.logger to use instead
-        self.logger.info("%s\nUsing %s\n", TITLE, configFileName)
+        self.logger.info(TITLE)
+        self.logger.info("Using %s", configFileName)
+        print # Empty line to console only
         try:
             # Applying configuration
             channel = MONO
@@ -170,13 +168,14 @@ class RadioChronicle:
             if self.channel == None:
                 raise ValueError("channel must be LEFT/RIGHT/STEREO/ALL/MONO or a number of 1 or more, found %s" % channel)
 
-            # Accessing Audio engine
+            # Accessing PyAudio engine
             try:
                 from pyaudio import PyAudio
             except ImportError, e:
                 raise ImportError("%s: %s\nPlease install PyAudio: http://people.csail.mit.edu/hubert/pyaudio" % (e.__class__.__name__, e))
             self.audio = PyAudio()
-            self.logger.info("%s\n" % self.deviceInfo())
+            self.logger.info(self.deviceInfo())
+            print # Empty line to console only
 
             # Calculating derivative paratemers
             self.numInputChannels = 1 if self.channel == MONO else self.audio.get_device_info_by_index(self.inputDevice)['maxInputChannels']
@@ -197,7 +196,7 @@ class RadioChronicle:
             self.chunksToStop = self.chunksInSecond * self.maxPauseLength
             self.chunksOfFadeout = self.chunksInSecond * self.trailLength
 
-            # Configuring audio devices
+            # Printing info on audio devices to use
             if self.inputDevice != None:
                 self.logger.info("Using input device %s" % self.deviceInfo(self.inputDevice))
             else:
@@ -207,13 +206,18 @@ class RadioChronicle:
             else:
                 self.logger.info("Using default output device %s" % self.deviceInfo(self.audio.get_default_output_device_info()))
 
+            # Diagnosting audio devices
             if not self.createInputStream():
                 raise Exception("Can't create input stream, exiting")
+            self.closeInputStream()
             if not self.createOutputStream():
                 raise Exception("Can't create output stream, exiting")
+            self.closeOutputStream()
+
+            # ToDo: Print actual configuration parameter values
         except Exception, e:
             self.logger.error("Configuration error: %s" % e)
-            sys.exit(1)
+            exit(1)
 
     def __del__(self):
         '''Frees the PyAudio resources.'''
@@ -337,7 +341,8 @@ class RadioChronicle:
         self.lastSecondVolumes = [0] * self.chunksInSecond
         chunkInSecond = 0
         start_new_thread(self.commandConsole, ()) # Start command console thread
-        self.logger.info("\nListening started")
+        print # Empty line to console only
+        self.logger.info("Listening started")
 
         # Main audio processing loop
         while self.inLoop:
@@ -365,6 +370,7 @@ class RadioChronicle:
                     if not self.recording: # Start recording
                         # ToDo: add mechanism to avoid recording of very short transmissions
                         # ToDo: check inputStream.get_time(), latency etc. to provide exact time stamp for file naming
+                        # ToDo: check actual recording delay, is it really essential?
                         self.fileName = strftime(self.fileNameFormat)
                         self.logger.info("%s recording started" % self.fileName)
                         self.recording = True
@@ -404,13 +410,13 @@ class RadioChronicle:
                 inp = raw_input().split(' ')
                 command = inp[0]
                 if inp[0] == 'mean':
-                    print "%d%%" % mean(self.lastSecondVolumes)
-                elif inp[0] == 'quit':
+                    print "%d%%" % mean(self.lastSecondVolumes) # Using print for non-functional logging
+                elif inp[0] in ('exit', 'quit'):
                     self.logger.info("Exiting")
                     self.inLoop = False
                 elif inp[0] == 'monitor':
                     if len(inp) < 2:
-                        print "Monitor is %s" % ('ON' if self.monitor else 'OFF')
+                        print "Monitor is %s" % ('ON' if self.monitor else 'OFF') # Using print for non-functional logging
                     else:
                         self.monitor = inp[1].lower().strip() in ('true', 'on', '1')
                         self.logger.info("Monitor is set to %s" % ('ON' if self.monitor else 'OFF'))
@@ -423,7 +429,7 @@ class RadioChronicle:
                         self.inLoop = False
                 elif inp[0] == 'threshold':
                     if len(inp) < 2:
-                        print "Current volume treshold: %d" % self.volumeTreshold
+                        print "Current volume treshold: %d" % self.volumeTreshold # Using print for non-functional logging
                     else:
                         try:
                             self.volumeTreshold = int(inp[1])
@@ -431,7 +437,7 @@ class RadioChronicle:
                                 raise
                             self.logger.info("New volume treshold: %d" % self.volumeTreshold)
                         except:
-                            print "Bad value, expected 0-100"
+                            print "Bad value, expected 0-100" # Using print for non-functional logging
             except EOFError, e:
                 self.logger.warning("Console EOF detected, deactivating")
                 break
@@ -448,7 +454,7 @@ class RadioChronicle:
         print "Usage: python RadioChronicle.py [-c configFileName] [-h]"
         print "\t-h --help  Show this help message"
         print "\t-c --config <filename> Configuration file to use, defaults to %s" % DEFAULT_CONFIG_FILE_NAME
-        sys.exit(2)
+        exit(2)
 
     def sigTerm(self):
         '''SIGTERM handler.'''
