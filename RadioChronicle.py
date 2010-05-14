@@ -20,7 +20,7 @@ from time import sleep, strftime
 from traceback import format_exc
 
 TITLE = "RadioChronicle v0.3  http://code.google.com/p/radiochronicle"
-DEFAULT_CONFIG_FILE_NAME = "rc.conf"
+DEFAULT_CONFIG_FILE_NAME = 'rc.conf'
 
 MONO = -1
 STEREO = 0
@@ -42,13 +42,14 @@ def mean(iterable):
 
 def integral(iterable):
     '''Returns integral value of numbers in the specified iterable.
-       Should be better than mean() above).'''
+       Planned to be better than mean() above.'''
     # ToDo: currently it's not working, needs to be fixed
     # When it's ok, it's gonna replace the mean()
     return reduce(lambda y, x: 0.95 * y + 0.009 * x, iterable, 0)
 
 class RadioChronicle:
-    fileNameFormat = "RC-%Y%m%d-%H%M%S.wav"
+    # Default parameter values
+    fileNameFormat = './RC-%Y%m%d-%H%M%S.wav'
     monitor = False
     volumeTreshold = 10
     maxPauseLength = 2
@@ -58,8 +59,11 @@ class RadioChronicle:
     outputDevice = None
     audioBits = 16
     sampleRate = 44100
+    inputStream = None
+    outputStream = None
 
     def __init__(self):
+        '''Fully constructs class instance, including reading configuration file and configuring audio devices.'''
         # Reading config file and configuring logging
         try:
             configFileName = DEFAULT_CONFIG_FILE_NAME
@@ -79,21 +83,22 @@ class RadioChronicle:
                 logging.config.fileConfig(configFileName)
             self.logger = logging.getLogger()
             if not self.logger.handlers:
-                # ToDo: This doesn't work, if config file is absent, logging works poorly, needs fixing
+                # ToDo: This doesn't work - if config file is absent, logging works poorly, needs fixing
                 handler = logging.StreamHandler()
                 handler.setLevel(logging.INFO)
                 handler.setFormatter(logging.Formatter('%(message)s'))
                 self.logger.addHandler(handler)
-            self.logger.info("%s\nUsing %s\n", TITLE, configFileName)
             signal(SIGTERM, self.sigTerm)
         except Exception, e:
-            print "%s\n\nERROR: %s" % (TITLE, e)
+            print "%s\n\nConfiguration error: %s" % (TITLE, e)
             sys.exit(1)
-        # From this point on, we have self.logger to use for diagnostics
+        # Above this point, use print for diagnostics
+        # From this point on, we have self.logger to use instead
+        self.logger.info("%s\nUsing %s\n", TITLE, configFileName)
         try:
+            # Applying configuration
             channel = MONO
-
-            # Reading configuration
+            # ToDo: need to catch ValueError(s) and provide information about which parameter was wrong
             try:
                 section = 'general'
                 try:
@@ -137,7 +142,7 @@ class RadioChronicle:
                 except NoOptionError: pass
             except NoSectionError: pass
 
-            # Validating parameters
+            # Validating configuration parameters
             if not self.fileNameFormat:
                 raise ValueError("File name format is empty")
             if not 0 <= self.volumeTreshold <= 100:
@@ -148,6 +153,10 @@ class RadioChronicle:
                 self.trailLength = 0
             if self.chunkSize < 1:
                 raise ValueError("chunkSize must be 1 or more, found %d" % self.chunkSize)
+            if self.inputDevice < 0:
+                self.inputDevice = None
+            if self.outputDevice < 0:
+                self.outputDevice = None
             if self.audioBits not in (8, 16, 32):
                 raise ValueError("audioBits must be 8, 16, or 32, found %d" % self.audioBits)
             if self.sampleRate < 1:
@@ -188,6 +197,7 @@ class RadioChronicle:
             self.chunksToStop = self.chunksInSecond * self.maxPauseLength
             self.chunksOfFadeout = self.chunksInSecond * self.trailLength
 
+            # Configuring audio devices
             if self.inputDevice != None:
                 self.logger.info("Using input device %s" % self.deviceInfo(self.inputDevice))
             else:
@@ -196,24 +206,26 @@ class RadioChronicle:
                 self.logger.info("Using output device %s" % self.deviceInfo(self.outputDevice))
             else:
                 self.logger.info("Using default output device %s" % self.deviceInfo(self.audio.get_default_output_device_info()))
+
+            if not self.createInputStream():
+                raise Exception("Can't create input stream, exiting")
+            if not self.createOutputStream():
+                raise Exception("Can't create output stream, exiting")
         except Exception, e:
-            self.logger.error("ERROR: %s" % e)
+            self.logger.error("Configuration error: %s" % e)
             sys.exit(1)
 
-    def usage(self, error = None):
-        if error:
-            print error
-        print "Usage: python RadioChronicle.py [-c configFileName] [-h]"
-        print "\t-h --help  Show this help message"
-        print "\t-c --config <filename> Configuration file to use, defaults to %s" % DEFAULT_CONFIG_FILE_NAME
-        sys.exit(2)
-
-    def sigTerm(self):
-        self.logger.warning("SIGTERM caught, exiting")
-        self.inLoop = False
+    def __del__(self):
+        '''Frees the PyAudio resources.'''
+        self.closeInputStream()
+        self.closeOutputStream()
+        self.audio.terminate()
+        self.logger.debug("Destroyed")
 
     def deviceInfo(self, device = None):
+        '''Provides string information about system audio device(s).'''
         if device == None:
+            # Return info on all available devices
             inputDevices = []
             outputDevices = []
             for i in xrange(self.audio.get_device_count()):
@@ -223,6 +235,7 @@ class RadioChronicle:
                 else:
                     inputDevices.append(device)
             return "Detected audio input devices:\n%s\nDetected audio output devices:\n%s" % ('\n'.join(self.deviceInfo(device) for device in inputDevices), '\n'.join(self.deviceInfo(device) for device in outputDevices))
+        # else Return info on a particular device
         if type(device) == int:
             device = self.audio.get_device_info_by_index(device)
         inputChannels = device['maxInputChannels']
@@ -231,45 +244,75 @@ class RadioChronicle:
         assert bool(inputChannels) != isOutput
         return "%d: %s (%d channels)" % (device['index'], device['name'], outputChannels if isOutput else inputChannels)
 
-    def commandConsole(self):
+    def createInputStream(self):
+        '''Creates an input stream if it doesn't already exist.
+           Returns True if stream already exists or was created successfuly, False otherwise.'''
+        if self.inputStream:
+            return True
         try:
-            while self.inLoop:
-                try:
-                    inp = raw_input().split(' ')
-                    command = inp[0]
-                    if inp[0] == "mean":
-                        print "%d%%" % mean(self.lastSecondVolumes)
-                    elif inp[0] == "quit":
-                        self.inLoop = False
-                    elif inp[0] == "monitor":
-                        if len(inp) < 2:
-                            print "Monitor is %s" % 'ON' if self.monitor else 'OFF'
-                        else:
-                            self.monitor = inp[1].lower().strip() in ('true', 'on', '1')
-                            print "Monitor is set to %s" % 'ON' if self.monitor else 'OFF'
-                    elif inp[0] == "last":
-                        if self.recording:
-                            self.quitAfterRecording = True
-                            print "Recording the last track"
-                        else:
-                            self.inLoop = False
-                    elif inp[0] == "level":
-                        if len(inp) < 2:
-                            print "Current silence level: %d" % self.volumeTreshold
-                        else:
-                            try:
-                                self.volumeTreshold = int(inp[1])
-                                assert 0 <= self.volumeTreshold <= 100
-                                print "New silence level: %d" % self.volumeTreshold
-                            except:
-                                print "Bad value, expected 0-100"
-                except Exception, e:
-                    self.logger.warning("Console error: %s: %s\n%s" % (e.__class__.__name__, e, format_exc()))
-        except KeyboardInterrupt, e:
-            self.logger.warning("Ctrl-C detected at console, exiting")
-            self.inLoop = false
+            self.inputStream = self.audio.open(self.sampleRate, self.numInputChannels, self.audioFormat, True, False, self.inputDevice, None, self.chunkSize)
+            return True
+        except Exception, e:
+            self.logger.warning("Error creating input stream: %s: %s" % (e.__class__.__name__, e))
+            return False
+
+    def createOutputStream(self):
+        '''Creates an output stream if it doesn't already exist.
+           Returns True if stream already exists or was created successfuly, False otherwise.'''
+        if self.outputStream:
+            return True
+        try:
+            self.outputStream = self.audio.open(self.sampleRate, self.numOutputChannels, self.audioFormat, False, True, None, self.outputDevice, self.chunkSize)
+            return True
+        except Exception, e:
+            self.logger.warning("Error creating output stream: %s: %s" % (e.__class__.__name__, e))
+            return False
+
+    def closeInputStream(self):
+        if self.inputStream:
+            self.inputStream.close()
+            self.inputStream = None
+
+    def closeOutputStream(self):
+        if self.outputStream:
+            self.outputStream.close()
+            self.outputStream = None
+
+    def readAudioData(self):
+        '''Reads a chunk of audio data from the input stream.
+           Returns the retrieved data if successful, None otherwise.'''
+        if not self.createInputStream():
+            return None
+        try:
+            data = self.inputStream.read(self.chunkSize)
+            return data
+        except Exception, e:
+            # Note: IOError: [Errno Input overflowed] -9981 often occurs when running under debugger
+            # Note: IOError: [Errno Unanticipated host error] -9999 occurs when audio device is removed (cable unplugged)
+            # ToDo: After 5-10 occurences of the above exception system hangs, so stream re-create seems necessary
+            self.logger.warning("Audio input error: %s: %s" % (e.__class__.__name__, e))
+            self.closeInputStream()
+            self.dump()
+            return None
+
+    def writeAudioData(self, data):
+        '''Writes a chunk of audio data to the output stream.
+           Returns True if successful, False otherwise.'''
+        if not self.createOutputStream():
+            return False
+        try:
+            self.outputStream.write(data)
+            return True
+        except Exception, e:
+            self.logger.warning("Audio output error: %s: %s" % (e.__class__.__name__, e))
+            self.closeOutputStream()
+            return False
 
     def dump(self):
+        '''If recording is on, dumps the recorded data (if any) to a .wav file, and stops recording.
+           Returns True if dump was successful or recording was off, False otherwise.'''
+        if not self.recording:
+            return True
         try:
             self.recording = False
             if not self.sampleLength:
@@ -281,79 +324,136 @@ class RadioChronicle:
             f.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end
             f.close()
             self.logger.info("Recording finished, max volume %d, %.1f seconds" % (self.localMaxVolume, float(self.sampleLength) / self.outputSecondSize))
+            return True
         except:
-            self.logger.warning("Output error: %s: %s\n%s" % (e.__class__.__name__, e, format_exc()))
+            self.logger.warning("File output error: %s: %s" % (e.__class__.__name__, e))
+            return False
 
     def run(self):
+        '''Runs main audio processing loop.'''
         self.inLoop = True
         self.recording = False
         self.quitAfterRecording = False
         self.lastSecondVolumes = [0] * self.chunksInSecond
-        frameInSecond = 0
-
+        chunkInSecond = 0
+        start_new_thread(self.commandConsole, ()) # Start command console thread
         self.logger.info("\nListening started")
-        inputStream = self.audio.open(self.sampleRate, self.numInputChannels, self.audioFormat, True, False, self.inputDevice, None, self.chunkSize)
-        outputStream = self.audio.open(self.sampleRate, self.numOutputChannels, self.audioFormat, False, True, None, self.outputDevice, self.chunkSize)
 
-        #start_new_thread(self.commandConsole, ())
-        try:
-            while self.inLoop:
-                # We've just received a new part of sound data
-                try:
-                    data = inputStream.read(self.chunkSize)
-                    # ToDo: check inputStream.get_time(), latency etc. to provide exact time stamp for file naming
-                    assert len(data) == self.inputBlockSize
+        # Main audio processing loop
+        while self.inLoop:
+            try:
+                # Retrieve next chunk of audio data
+                data = self.readAudioData()
+                if not data: # Error occurred
+                    sleep(1.0 / self.chunksInSecond) # Avoid querying malfunctioning device too often
+                    continue
+                assert len(data) == self.inputBlockSize
 
-                    if self.channel not in (MONO, STEREO):
-                        data = ''.join(data[i : i + self.audioBytes] for i in xrange((self.channel - 1) * self.audioBytes, len(data), self.numInputChannels * self.audioBytes))
-                    assert len(data) == self.outputBlockSize
+                if self.channel not in (MONO, STEREO): # Extract the data for particular channel
+                    data = ''.join(data[i : i + self.audioBytes] for i in xrange((self.channel - 1) * self.audioBytes, len(data), self.numInputChannels * self.audioBytes))
+                assert len(data) == self.outputBlockSize
 
-                    if self.monitor: # Provide monitor output
-                        # ToDo: Need separate output stream to allow only left/right channel output
-                        outputStream.write(data, self.chunkSize)
+                if self.monitor: # Provide monitor output
+                    self.writeAudioData(data)
 
-                    # Let's see if data contains something loud enough
-                    volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in xrange(0, len(data), self.audioBytes)) * 100 + self.maxVolume / 2) / self.maxVolume
-                    self.lastSecondVolumes[frameInSecond] = volume # Logging the sound volume during the last second
-                    frameInSecond = (frameInSecond + 1) % self.chunksInSecond
+                # Gathering volume statistics
+                volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in xrange(0, len(data), self.audioBytes)) * 100 + self.maxVolume / 2) / self.maxVolume
+                self.lastSecondVolumes[chunkInSecond] = volume # Logging the sound volume during the last second
+                chunkInSecond = (chunkInSecond + 1) % self.chunksInSecond
 
-                    if volume >= self.volumeTreshold:
-                        if not self.recording: # Start recording
-                            # ToDo: add mechanism to avoid recording of very short transmissions
-                            self.fileName = strftime(self.fileNameFormat)
-                            print "%s recording started" % self.fileName
-                            self.recording = True
-                            self.sample = ''
-                            self.localMaxVolume = volume
-                        elif volume > self.localMaxVolume:
-                            self.localMaxVolume = volume
-                        self.sample += data
-                        chunksOfSilence = 0
-                        self.sampleLength = 0
-                    elif self.recording: # Check for stop recording
-                        self.sample += data
-                        chunksOfSilence += 1
-                        if not self.sampleLength and chunksOfSilence > self.chunksOfFadeout: # Enough silence for a trail
-                            self.sampleLength = len(self.sample) # Removing extra silence at the end
-                        if chunksOfSilence > self.chunksToStop: # Enough silence to stop recording
-                            self.dump() # Stopping recording
-                            if self.quitAfterRecording:
-                                inLoop = False
-                except Exception, e:
-                    # Note: IOError: [Errno Input overflowed] -9981 often occurs when running under debugger
-                    # Note: IOError: [Errno Unanticipated host error] -9999 occurs when audio device is removed (cable unplugged)
-                    self.logger.warning("Input error: %s: %s" % (e.__class__.__name__, e))
-                    # ToDo: After 5-10 exceptions system hangs, stream re-create may be necessary
-                    # ToDo: Also, file being recorded must be flushed and closed immediately
-        except KeyboardInterrupt, e:
-            self.logger.warning("Ctrl-C detected at input, exiting")
+                if volume >= self.volumeTreshold: # The chunk is loud enough
+                    if not self.recording: # Start recording
+                        # ToDo: add mechanism to avoid recording of very short transmissions
+                        # ToDo: check inputStream.get_time(), latency etc. to provide exact time stamp for file naming
+                        self.fileName = strftime(self.fileNameFormat)
+                        self.logger.info("%s recording started" % self.fileName)
+                        self.recording = True
+                        self.sample = ''
+                        self.localMaxVolume = volume
+                    elif volume > self.localMaxVolume:
+                        self.localMaxVolume = volume
+                    self.sample += data
+                    chunksOfSilence = 0
+                    self.sampleLength = 0
+                elif self.recording: # Check for stop recording
+                    self.sample += data
+                    chunksOfSilence += 1
+                    if not self.sampleLength and chunksOfSilence > self.chunksOfFadeout: # Enough silence for a trail
+                        self.sampleLength = len(self.sample) # Removing extra silence at the end
+                    if chunksOfSilence > self.chunksToStop: # Enough silence to stop recording
+                        self.dump() # Stopping recording
+                        if self.quitAfterRecording:
+                            self.inLoop = False
+            except Exception, e:
+                self.logger.warning("Processing error: %s: %s" % (e.__class__.__name__, e))
+                self.dump()
+            except KeyboardInterrupt, e:
+                self.logger.warning("Ctrl-C detected at input, exiting")
+                self.inLoop = False
 
         if self.recording: # Listening was interrupted in the middle of recording
             self.dump()
-        inputStream.close()
-        outputStream.close()
-        self.audio.terminate()
+        self.closeInputStream()
+        self.closeOutputStream()
         self.logger.info("Done")
+
+    def commandConsole(self):
+        '''Runs in a separate thread to provide a command line operation adjustments.'''
+        while self.inLoop:
+            try:
+                inp = raw_input().split(' ')
+                command = inp[0]
+                if inp[0] == 'mean':
+                    print "%d%%" % mean(self.lastSecondVolumes)
+                elif inp[0] == 'quit':
+                    self.logger.info("Exiting")
+                    self.inLoop = False
+                elif inp[0] == 'monitor':
+                    if len(inp) < 2:
+                        print "Monitor is %s" % ('ON' if self.monitor else 'OFF')
+                    else:
+                        self.monitor = inp[1].lower().strip() in ('true', 'on', '1')
+                        self.logger.info("Monitor is set to %s" % ('ON' if self.monitor else 'OFF'))
+                elif inp[0] == 'last':
+                    if self.recording:
+                        self.quitAfterRecording = True
+                        self.logger.info("Going to exit after the end of the recording")
+                    else:
+                        self.logger.info("Exiting")
+                        self.inLoop = False
+                elif inp[0] == 'threshold':
+                    if len(inp) < 2:
+                        print "Current volume treshold: %d" % self.volumeTreshold
+                    else:
+                        try:
+                            self.volumeTreshold = int(inp[1])
+                            if not 0 <= self.volumeTreshold <= 100:
+                                raise
+                            self.logger.info("New volume treshold: %d" % self.volumeTreshold)
+                        except:
+                            print "Bad value, expected 0-100"
+            except EOFError, e:
+                self.logger.warning("Console EOF detected, deactivating")
+                break
+            except Exception, e:
+                self.logger.warning("Console error: %s: %s\n%s" % (e.__class__.__name__, e, format_exc()))
+            except KeyboardInterrupt, e:
+                self.logger.warning("Ctrl-C detected at console, exiting")
+                self.inLoop = false
+
+    def usage(self, error = None):
+        '''Prints usage information (preceded by optional error message) and exits with code 2.'''
+        if error:
+            print error
+        print "Usage: python RadioChronicle.py [-c configFileName] [-h]"
+        print "\t-h --help  Show this help message"
+        print "\t-c --config <filename> Configuration file to use, defaults to %s" % DEFAULT_CONFIG_FILE_NAME
+        sys.exit(2)
+
+    def sigTerm(self):
+        '''SIGTERM handler.'''
+        self.logger.warning("SIGTERM caught, exiting")
+        self.inLoop = False
 
 def main():
     RadioChronicle().run()
