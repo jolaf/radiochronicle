@@ -1,4 +1,5 @@
 #summary Перечень изменений
+#labels ChangeLog
 
 Ante Scriptum: с ключом --message при коммите пока не разобрался :)
 
