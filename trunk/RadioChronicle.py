@@ -1,6 +1,9 @@
 #
 # RadioChronicle
 #
+# by Vladimir Yashunsky (vladimir.yashunsky@gmail.com) and Vasily Zakharov (vmzakhar@gmail.com)
+# http://code.google.com/p/radiochronicle/
+#
 # Version 0.3
 #
 # Requires PyAudio: http://people.csail.mit.edu/hubert/pyaudio/
@@ -26,18 +29,19 @@ STEREO = 0
 LEFT = 1
 RIGHT = 2
 
-CHANNELS_MAP = { 'LEFT': LEFT, 'RIGHT': RIGHT, 'STEREO': STEREO, 'ALL': STEREO, 'MONO': MONO }
+CHANNEL_NUMBERS = { 'LEFT': LEFT, 'RIGHT': RIGHT, 'STEREO': STEREO, 'ALL': STEREO, 'MONO': MONO }
+CHANNEL_NAMES = { LEFT: 'LEFT', RIGHT: 'RIGHT', STEREO: 'STEREO', MONO: 'MONO' }
 
 PACK_FORMATS = { 8 : 'b', 16 : '<h', 32 : '<i' }
 
 def mean(iterable):
-    '''Returns integer arithmetic mean of numbers in the specified iterable.'''
+    '''Returns arithmetic mean of numbers in the specified iterable.'''
     if not iterable:
         return 0
     sum = 0
     for (n, i) in enumerate(iterable, 1):
         sum += i
-    return int(round(float(sum) / n))
+    return float(sum) / n
 
 class RadioChronicle:
     # Default parameter values
@@ -103,10 +107,10 @@ class RadioChronicle:
                 section = 'tuning'
                 try:
                     value = config.get(section, 'volumeTreshold')
-                    self.volumeTreshold = int(value)
+                    self.volumeTreshold = float(value)
                 except NoOptionError: pass
                 except ValueError, e:
-                    raise ValueError("Bad value for [%s].volumeTreshold: '%s', must be an integer" % (section, value))
+                    raise ValueError("Bad value for [%s].volumeTreshold: '%s', must be a float" % (section, value))
                 try:
                     value = config.get(section, 'maxPauseLength')
                     self.maxPauseLength = float(value)
@@ -161,7 +165,7 @@ class RadioChronicle:
             if not self.fileNameFormat:
                 raise ValueError("Bad value for fileNameFormat: must be not empty")
             if not 0 <= self.volumeTreshold <= 100:
-                raise ValueError("Bad value for volumeTreshold: %d, must be 0-100" % self.volumeTreshold)
+                raise ValueError("Bad value for volumeTreshold: %.2f, must be 0-100" % self.volumeTreshold)
             if self.maxPauseLength < 0:
                 self.maxPauseLength = 0
             if self.trailLength < 0:
@@ -187,7 +191,7 @@ class RadioChronicle:
                 if self.channel <= 0:
                     self.channel = None # Exception will be thrown below
             except ValueError:
-                self.channel = CHANNELS_MAP.get(channel.strip().upper()) # Would be None if not found
+                self.channel = CHANNEL_NUMBERS.get(channel.strip().upper()) # Would be None if not found
             if self.channel == None:
                 raise ValueError("Bad value for channel: %s, must be LEFT/RIGHT/STEREO/ALL/MONO or a number of 1 or more" % channel)
 
@@ -202,18 +206,22 @@ class RadioChronicle:
             # Accessing audio devices
             try:
                 if self.inputDevice != None:
-                    self.logger.info("Using input device %s" % self.deviceInfo(self.inputDevice, False))
+                    inputDeviceInfo = self.audio.get_device_info_by_index(self.inputDevice)
+                    self.logger.info("Using input device %s" % self.deviceInfo(inputDeviceInfo, False))
                 else:
-                    self.logger.info("Using default input device %s" % self.deviceInfo(self.audio.get_default_input_device_info(), False))
+                    inputDeviceInfo = self.audio.get_default_input_device_info()
+                    self.logger.info("Using default input device %s" % self.deviceInfo(inputDeviceInfo, False))
             except ValueError:
                 raise ValueError("%s is not in fact an input device" % ("Input device %d" % self.inputDevice if self.inputDevice != None else "Default input device"))
             except IOError, e:
                 raise IOError("Can't access %s: %s" % ("input device %d" % self.inputDevice if self.inputDevice != None else "default input device", e))
             try:
                 if self.outputDevice != None:
-                    self.logger.info("Using output device %s" % self.deviceInfo(self.outputDevice, True))
+                    outputDeviceInfo = self.audio.get_device_info_by_index(self.outputDevice)
+                    self.logger.info("Using output device %s" % self.deviceInfo(outputDeviceInfo, True))
                 else:
-                    self.logger.info("Using default output device %s" % self.deviceInfo(self.audio.get_default_output_device_info(), True))
+                    outputDeviceInfo = self.audio.get_default_output_device_info()
+                    self.logger.info("Using default output device %s" % self.deviceInfo(outputDeviceInfo, True))
             except ValueError:
                 raise ValueError("%s is not in fact an output device" % ("output device %d" % self.outputDevice if self.outputDevice != None else "Default output device"))
             except IOError, e:
@@ -221,8 +229,10 @@ class RadioChronicle:
             print # Empty line to console only
 
             # Calculating derivative paratemers
-            self.numInputChannels = 1 if self.channel == MONO else self.audio.get_device_info_by_index(self.inputDevice)['maxInputChannels']
+            self.numInputChannels = 1 if self.channel == MONO else inputDeviceInfo['maxInputChannels']
             assert self.numInputChannels > 0
+            if self.channel > self.numInputChannels:
+                raise ValueError("Bad value for channel: %d, must be no more than %d" % (self.channel, self.numInputChannels))
             self.numOutputChannels = self.numInputChannels if self.channel == STEREO else 1
             assert self.numOutputChannels > 0
 
@@ -247,7 +257,12 @@ class RadioChronicle:
                 raise Exception("Can't create output stream")
             self.closeOutputStream()
 
-            # ToDo: Print actual configuration parameter values, starting with 44100/16-bit/Mono...
+            # Printing configuration info
+            self.logger.info("Recording %dHz/%d-bit/%s to %s" % (self.sampleRate, self.audioBits, CHANNEL_NAMES.get(self.channel) or "channel %d" % self.channel, self.fileNameFormat))
+            self.logger.info("Volume threshold %.2f%%, max pause %.1f seconds, trail %.1f seconds" % (self.volumeTreshold, self.maxPauseLength, self.trailLength))
+            self.logger.info("Monitor is %s" % ('ON' if self.monitor else 'OFF'))
+            print "Type 'help' for console commands reference" # Using print for non-functional logging
+            print # Empty line to console only
         except Exception, e:
             self.logger.error("Configuration error: %s" % e)
             exit(1)
@@ -363,7 +378,7 @@ class RadioChronicle:
             f.setframerate(self.sampleRate)
             f.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end
             f.close()
-            self.logger.info("Recording finished, max volume %d, %.1f seconds" % (self.localMaxVolume, float(self.sampleLength) / self.outputSecondSize))
+            self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, float(self.sampleLength) / self.outputSecondSize))
             return True
         except:
             self.logger.warning("File output error: %s: %s" % (e.__class__.__name__, e))
@@ -398,6 +413,7 @@ class RadioChronicle:
 
                 # Gathering volume statistics
                 volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in xrange(0, len(data), self.audioBytes)) * 100 + self.maxVolume / 2) / self.maxVolume
+                # print "%.2f" % volume
                 self.lastSecondVolumes[chunkInSecond] = volume # Logging the sound volume during the last second
                 chunkInSecond = (chunkInSecond + 1) % self.chunksInSecond
 
@@ -405,7 +421,6 @@ class RadioChronicle:
                     if not self.recording: # Start recording
                         # ToDo: add mechanism to avoid recording of very short transmissions
                         # ToDo: check inputStream.get_time(), latency etc. to provide exact time stamp for file naming
-                        # ToDo: check actual recording delay, is it really essential?
                         self.fileName = strftime(self.fileNameFormat)
                         self.logger.info("%s recording started" % self.fileName)
                         self.recording = True
@@ -440,44 +455,52 @@ class RadioChronicle:
         try:
             while self.inLoop:
                 inp = raw_input().split(' ')
-                command = inp[0]
-                if inp[0] == 'mean':
-                    print "%d%%" % mean(self.lastSecondVolumes) # Using print for non-functional logging
-                elif inp[0] in ('exit', 'quit'):
+                command = inp[0].lower()
+                if 'help'.startswith(command):
+                    print """\nAvailable console commands (first letter is enough):
+Help               - Show this information
+Exit/Quit          - Exit the program immediately
+Last               - Exit the program after completion of the current file
+Volume             - Print the current mean volume level
+Monitor [on/off]   - Show or toggle monitor status
+Threshold [value]  - Show or set the volume threshold level\n"""
+                elif 'exit'.startswith(command) or 'quit'.startswith(command):
                     self.logger.info("Exiting")
                     self.inLoop = False
-                elif inp[0] == 'monitor':
+                elif 'volume'.startswith(command):
+                    print "%.2f%%" % mean(self.lastSecondVolumes) # Using print for non-functional logging
+                elif 'monitor'.startswith(command):
                     if len(inp) < 2:
                         print "Monitor is %s" % ('ON' if self.monitor else 'OFF') # Using print for non-functional logging
                     else:
-                        self.monitor = inp[1].lower().strip() in ('true', 'on', '1')
+                        self.monitor = inp[1].lower().strip() in ('true', 'yes', 'on', '1')
                         self.logger.info("Monitor is set to %s" % ('ON' if self.monitor else 'OFF'))
-                elif inp[0] == 'last':
+                elif 'last'.startswith(command):
                     if self.recording:
                         self.quitAfterRecording = True
                         self.logger.info("Going to exit after the end of the recording")
                     else:
                         self.logger.info("Exiting")
                         self.inLoop = False
-                elif inp[0] == 'threshold':
+                elif 'threshold'.startswith(command):
                     if len(inp) < 2:
-                        print "Current volume treshold: %d" % self.volumeTreshold # Using print for non-functional logging
+                        print "Current volume treshold: %.2f" % self.volumeTreshold # Using print for non-functional logging
                     else:
                         try:
-                            self.volumeTreshold = int(inp[1])
+                            self.volumeTreshold = float(inp[1])
                             if not 0 <= self.volumeTreshold <= 100:
                                 raise
-                            self.logger.info("New volume treshold: %d" % self.volumeTreshold)
+                            self.logger.info("New volume treshold: %.2f" % self.volumeTreshold)
                         except:
                             print "Bad value, expected 0-100" # Using print for non-functional logging
         except EOFError, e:
-            self.logger.warning("Console EOF detected, deactivating")
+            self.logger.warning("Console EOF detected")
         except Exception, e:
             self.logger.warning("Console error: %s: %s\n%s" % (e.__class__.__name__, e, format_exc()))
-            self.inLoop = false
+            self.inLoop = False
         except KeyboardInterrupt, e:
             self.logger.warning("Ctrl-C detected at console, exiting")
-            self.inLoop = false
+            self.inLoop = False
 
     def usage(self, error = None):
         '''Prints usage information (preceded by optional error message) and exits with code 2.'''
