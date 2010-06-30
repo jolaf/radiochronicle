@@ -362,30 +362,54 @@ class RadioChronicle:
             self.logger.warning("Audio output error: %s: %s" % (e.__class__.__name__, e))
             self.closeOutputStream()
             return False
-
-    def dump(self):
-        '''If recording is on, dumps the recorded data (if any) to a .wav file, and stops recording.
-           Returns True if dump was successful or recording was off, False otherwise.'''
+            
+    def saveSample(self):
+        '''A universal function, destinated to save the curent sample to the audio file.
+           If the file does not exists, the function creates it.
+           If the sample length is not equal to the self.sampleLength value, it meens, we cut the silence at the end
+           of the sample, so it's the end of the file and it can be closed.
+           The function returns True, on success or if the recording is off, False otherwise.'''
+        
         if not self.recording:
             return True
         try:
-            self.recording = False
-            if not self.sampleLength:
-                self.sampleLength = len(self.sample)
-            f = wave.open(self.fileName, 'wb')
-            f.setnchannels(self.numOutputChannels)
-            f.setsampwidth(self.audioBytes)
-            f.setframerate(self.sampleRate)
-            f.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end
-            f.close()
-            self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, float(self.sampleLength) / self.outputSecondSize))
+            if self.audioFile == None: #creating the file if needed
+                self.audioFile = wave.open(self.fileName, 'wb')
+                self.audioFile.setnchannels(self.numOutputChannels)
+                self.audioFile.setsampwidth(self.audioBytes)
+                self.audioFile.setframerate(self.sampleRate)
+            
+            finalSample = True
+            
+            if not self.sampleLength: #if the sampleLength wasn't set manualy, all the sample is saved and it meens, 
+                self.sampleLength = len(self.sample)                #the record isn't over yet.
+                finalSample = False
+
+            self.audioFile.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end, if needed
+
+            self.sample = ''
+            self.sampleLength = 0
+            
+            if finalSample:
+                self.recording = False
+                self.audioFile.close()
+                self.audioFile = None
+                self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, (float(self.audioFileLength) / self.outputSecondSize)-self.maxPauseLength+self.trailLength))
+            
+                
+                
             return True
-        except:
+        except Exception, e:
             self.logger.warning("File output error: %s: %s" % (e.__class__.__name__, e))
             return False
-
+        
+    
+    
     def run(self):
         '''Runs main audio processing loop.'''
+        self.audioFile = None
+        self.sampleLength = 0
+        self.audioFileLength = 0
         self.inLoop = True
         self.recording = False
         self.quitAfterRecording = False
@@ -426,18 +450,27 @@ class RadioChronicle:
                         self.recording = True
                         self.sample = ''
                         self.localMaxVolume = volume
+                        self.audioFileLength = 0
                     elif volume > self.localMaxVolume:
                         self.localMaxVolume = volume
-                    self.sample += data
-                    chunksOfSilence = 0
+                    
                     self.sampleLength = 0
+                    chunksOfSilence = 0
+                    
+                    self.sample += data
+                    self.saveSample()
+                    self.audioFileLength += len(data)
+                    
+                    
+                    
                 elif self.recording: # Check for stop recording
                     self.sample += data
+                    self.audioFileLength += len(data)
                     chunksOfSilence += 1
                     if not self.sampleLength and chunksOfSilence > self.chunksOfFadeout: # Enough silence for a trail
                         self.sampleLength = len(self.sample) # Removing extra silence at the end
                     if chunksOfSilence > self.chunksToStop: # Enough silence to stop recording
-                        self.dump() # Stopping recording
+                        self.saveSample() # Stopping recording
                         if self.quitAfterRecording:
                             self.inLoop = False
         except Exception, e:
