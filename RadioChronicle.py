@@ -373,7 +373,7 @@ class RadioChronicle:
         if not self.recording:
             return True
         try:
-            if not self.audioFile: # Creating the file if needed
+            if not self.audioFile: # Creating the file if necessary
                 self.audioFile = wave.open(self.fileName, 'wb')
                 self.audioFile.setnchannels(self.numOutputChannels)
                 self.audioFile.setsampwidth(self.audioBytes)
@@ -470,7 +470,8 @@ class RadioChronicle:
         except KeyboardInterrupt, e:
             self.logger.warning("Ctrl-C detected at input, exiting")
         self.inLoop = False
-        self.dump()
+        self.saveSample()
+        self.audioFile.close()
         self.closeInputStream()
         self.closeOutputStream()
         self.logger.info("Done")
