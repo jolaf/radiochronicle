@@ -1,7 +1,8 @@
 #
 # RadioChronicle
 #
-# by Vladimir Yashunsky (vladimir.yashunsky@gmail.com) and Vasily Zakharov (vmzakhar@gmail.com)
+# by Vladimir Yashunsky (vladimir.yashunsky@gmail.com)
+# and Vasily Zakharov (vmzakhar@gmail.com)
 # http://code.google.com/p/radiochronicle/
 #
 # Version 0.4
@@ -64,14 +65,14 @@ class RadioChronicle:
         '''Fully constructs class instance, including reading configuration file and configuring audio devices.'''
         try: # Reading command line options
             configFileName = DEFAULT_CONFIG_FILE_NAME
-            (options, args) = getopt(argv[1:], 'c:vh', ['config=', 'help'])
+            (options, args) = getopt(argv[1:], 'c:h', ('config=', 'help'))
             for (option, value) in options:
                 if option in ('-c', '--config'):
                     configFileName = value.strip()
                 else:
-                    self.usage()
+                    usage()
         except Exception, e:
-            self.usage("Error: %s\n" % e)
+            usage("Error: %s\n" % e)
         try: # Reading config file and configuring logging
             config = ConfigParser()
             config.readfp(open(configFileName)) # Using readfp(open()) to make sure file exists
@@ -88,7 +89,7 @@ class RadioChronicle:
         # Above this point, use print for diagnostics
         # From this point on, we have self.logger to use instead
         self.logger.info(TITLE)
-        self.logger.info("Using %s", configFileName)
+        self.logger.info("Using %s" % configFileName)
         print # Empty line to console only
         try: # Applying configuration
             channel = 'MONO'
@@ -362,49 +363,45 @@ class RadioChronicle:
             self.logger.warning("Audio output error: %s: %s" % (e.__class__.__name__, e))
             self.closeOutputStream()
             return False
-            
+
     def saveSample(self):
-        '''A universal function, destinated to save the curent sample to the audio file.
-           If the file does not exists, the function creates it.
-           If the sample length is not equal to the self.sampleLength value, it meens, we cut the silence at the end
-           of the sample, so it's the end of the file and it can be closed.
-           The function returns True, on success or if the recording is off, False otherwise.'''
-        
+        '''Saves the curent sample to the audio file.
+           If the file does not exists, it is created.
+           If the sample length is not equal to the self.sampleLength value, it means, we've cut
+           the silence at the end of the sample, so it's the end of the file and it should be closed.
+           The function returns True on success or if the recording is off, False otherwise.'''
         if not self.recording:
             return True
         try:
-            if self.audioFile == None: #creating the file if needed
+            if not self.audioFile: # Creating the file if needed
                 self.audioFile = wave.open(self.fileName, 'wb')
                 self.audioFile.setnchannels(self.numOutputChannels)
                 self.audioFile.setsampwidth(self.audioBytes)
                 self.audioFile.setframerate(self.sampleRate)
-            
-            finalSample = True
-            
-            if not self.sampleLength: #if the sampleLength wasn't set manualy, all the sample is saved and it meens, 
-                self.sampleLength = len(self.sample)                #the record isn't over yet.
+
+            if self.sampleLength:
+                finalSample = True
+            else:
+                # If sampleLength wasn't set manualy, all the sample is saved.
+                # It means the recording isn't over yet.
+                self.sampleLength = len(self.sample)
                 finalSample = False
 
             self.audioFile.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end, if needed
 
             self.sample = ''
             self.sampleLength = 0
-            
+
             if finalSample:
                 self.recording = False
                 self.audioFile.close()
                 self.audioFile = None
                 self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, (float(self.audioFileLength) / self.outputSecondSize)-self.maxPauseLength+self.trailLength))
-            
-                
-                
             return True
         except Exception, e:
             self.logger.warning("File output error: %s: %s" % (e.__class__.__name__, e))
             return False
-        
-    
-    
+
     def run(self):
         '''Runs main audio processing loop.'''
         self.audioFile = None
@@ -453,16 +450,11 @@ class RadioChronicle:
                         self.audioFileLength = 0
                     elif volume > self.localMaxVolume:
                         self.localMaxVolume = volume
-                    
                     self.sampleLength = 0
                     chunksOfSilence = 0
-                    
                     self.sample += data
                     self.saveSample()
                     self.audioFileLength += len(data)
-                    
-                    
-                    
                 elif self.recording: # Check for stop recording
                     self.sample += data
                     self.audioFileLength += len(data)
@@ -535,20 +527,20 @@ Threshold [value]  - Show or set the volume threshold level\n"""
             self.logger.warning("Ctrl-C detected at console, exiting")
             self.inLoop = False
 
-    def usage(self, error = None):
-        '''Prints usage information (preceded by optional error message) and exits with code 2.'''
-        print "%s\n" % TITLE
-        if error:
-            print error
-        print "Usage: python RadioChronicle.py [-c configFileName] [-h]"
-        print "\t-c --config <filename>   Configuration file to use, defaults to %s" % DEFAULT_CONFIG_FILE_NAME
-        print "\t-h --help                Show this help message"
-        exit(2)
-
     def sigTerm(self):
         '''SIGTERM handler.'''
         self.logger.warning("SIGTERM caught, exiting")
         self.inLoop = False
+
+def usage(error = None):
+    '''Prints usage information (preceded by optional error message) and exits with code 2.'''
+    print "%s\n" % TITLE
+    if error:
+        print error
+    print "Usage: python RadioChronicle.py [-c configFileName] [-h]"
+    print "\t-c --config <filename>   Configuration file to use, defaults to %s" % DEFAULT_CONFIG_FILE_NAME
+    print "\t-h --help                Show this help message"
+    exit(2)
 
 def main():
     RadioChronicle().run()
