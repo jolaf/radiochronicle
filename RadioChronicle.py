@@ -4,7 +4,7 @@
 # by Vladimir Yashunsky (vladimir.yashunsky@gmail.com) and Vasily Zakharov (vmzakhar@gmail.com)
 # http://code.google.com/p/radiochronicle/
 #
-# Version 0.3
+# Version 0.4
 #
 # Requires PyAudio: http://people.csail.mit.edu/hubert/pyaudio/
 #
