@@ -5,7 +5,7 @@
 # and Vasily Zakharov (vmzakhar@gmail.com)
 # http://code.google.com/p/radiochronicle/
 #
-# Version 0.4
+# Version 0.5
 #
 # Requires PyAudio: http://people.csail.mit.edu/hubert/pyaudio/
 #
@@ -20,6 +20,7 @@ from sys import argv, exit
 from thread import start_new_thread
 from time import sleep, strftime
 from traceback import format_exc
+from os import remove
 import wave
 
 TITLE = "RadioChronicle v0.3  http://code.google.com/p/radiochronicle"
@@ -51,6 +52,7 @@ class RadioChronicle:
     volumeTreshold = 10
     maxPauseLength = 2
     trailLength = 0.1
+    minRecordingLength = 0
     chunkSize = 1024
     inputDevice = None
     outputDevice = None
@@ -119,6 +121,12 @@ class RadioChronicle:
                 except ValueError, e:
                     raise ValueError("Bad value for [%s].maxPauseLength: '%s', must be a float" % (section, value))
                 try:
+                    value = config.get(section, 'minRecordingLength')
+                    self.minRecordingLength = float(value)
+                except NoOptionError: pass
+                except ValueError, e:
+                    raise ValueError("Bad value for [%s].minRecordingLength: '%s', must be a float" % (section, value))
+                try:
                     value = config.get(section, 'trailLength')
                     self.trailLength = float(value)
                 except NoOptionError: pass
@@ -169,6 +177,8 @@ class RadioChronicle:
                 raise ValueError("Bad value for volumeTreshold: %.2f, must be 0-100" % self.volumeTreshold)
             if self.maxPauseLength < 0:
                 self.maxPauseLength = 0
+            if self.minRecordingLength <0:
+                self.minRecordingLength = 0
             if self.trailLength < 0:
                 self.trailLength = 0
             if self.chunkSize < 1:
@@ -260,7 +270,7 @@ class RadioChronicle:
 
             # Printing configuration info
             self.logger.info("Recording %dHz/%d-bit/%s to %s" % (self.sampleRate, self.audioBits, CHANNEL_NAMES.get(self.channel) or "channel %d" % self.channel, self.fileNameFormat))
-            self.logger.info("Volume threshold %.2f%%, max pause %.1f seconds, trail %.1f seconds" % (self.volumeTreshold, self.maxPauseLength, self.trailLength))
+            self.logger.info("Volume threshold %.2f%%, max pause %.1f seconds, min recording length %.1f seconds, trail %.1f seconds" % (self.volumeTreshold, self.maxPauseLength, self.minRecordingLength, self.trailLength))
             self.logger.info("Monitor is %s" % ('ON' if self.monitor else 'OFF'))
             print "Type 'help' for console commands reference" # Using print for non-functional logging
             print # Empty line to console only
@@ -396,7 +406,17 @@ class RadioChronicle:
                 self.recording = False
                 self.audioFile.close()
                 self.audioFile = None
-                self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, (float(self.audioFileLength) / self.outputSecondSize)-self.maxPauseLength+self.trailLength))
+                recordLength = (float(self.audioFileLength) / self.outputSecondSize)-self.maxPauseLength+self.trailLength
+                if recordLength >= self.minRecordingLength:
+                    self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, recordLength))
+                else:
+                    try:
+                        remove(self.fileName)
+                        self.logger.info("The record is deleted for beeing too short (%.1f seconds)" % (recordLength))
+                    except Exception, e:
+                        self.logger.warning("Error deleting file: %s: %s" % (e.__class__.__name__, e))
+                        return False
+
             return True
         except Exception, e:
             self.logger.warning("File output error: %s: %s" % (e.__class__.__name__, e))
@@ -440,7 +460,6 @@ class RadioChronicle:
 
                 if volume >= self.volumeTreshold: # The chunk is loud enough
                     if not self.recording: # Start recording
-                        # ToDo: add mechanism to avoid recording of very short transmissions
                         # ToDo: check inputStream.get_time(), latency etc. to provide exact time stamp for file naming
                         self.fileName = strftime(self.fileNameFormat)
                         self.logger.info("%s recording started" % self.fileName)
@@ -470,8 +489,10 @@ class RadioChronicle:
         except KeyboardInterrupt, e:
             self.logger.warning("Ctrl-C detected at input, exiting")
         self.inLoop = False
-        self.saveSample()
-        self.audioFile.close()
+        self.saveSample()   #This function call is executed on exit. So we can not be sure about the final sample volume params
+        if self.audioFile:  #that's wy we'd better close the file manualy
+            self.audioFile.close()
+            self.audioFile = None
         self.closeInputStream()
         self.closeOutputStream()
         self.logger.info("Done")
