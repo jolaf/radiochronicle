@@ -397,6 +397,8 @@ class RadioChronicle:
                 self.sampleLength = len(self.sample)
                 finalSample = False
 
+            self.audioFileLength += self.sampleLength
+
             self.audioFile.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end, if needed
 
             self.sample = ''
@@ -407,8 +409,6 @@ class RadioChronicle:
                 self.audioFile.close()
                 self.audioFile = None
                 recordLength = (float(self.audioFileLength) / self.outputSecondSize)
-                if self.inLoop:
-                    recordLength += self.trailLength-self.maxPauseLength
                 if recordLength >= self.minRecordingLength:
                     self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, recordLength))
                 else:
@@ -475,10 +475,8 @@ class RadioChronicle:
                     chunksOfSilence = 0
                     self.sample += data
                     self.saveSample()
-                    self.audioFileLength += len(data)
                 elif self.recording: # Check for stop recording
                     self.sample += data
-                    self.audioFileLength += len(data)
                     chunksOfSilence += 1
                     if not self.sampleLength and chunksOfSilence > self.chunksOfFadeout: # Enough silence for a trail
                         self.sampleLength = len(self.sample) # Removing extra silence at the end
