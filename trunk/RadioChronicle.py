@@ -402,11 +402,13 @@ class RadioChronicle:
             self.sample = ''
             self.sampleLength = 0
 
-            if finalSample:
+            if finalSample or (not self.inLoop):
                 self.recording = False
                 self.audioFile.close()
                 self.audioFile = None
-                recordLength = (float(self.audioFileLength) / self.outputSecondSize)-self.maxPauseLength+self.trailLength
+                recordLength = (float(self.audioFileLength) / self.outputSecondSize)
+                if self.inLoop:
+                    recordLength += self.trailLength-self.maxPauseLength
                 if recordLength >= self.minRecordingLength:
                     self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, recordLength))
                 else:
@@ -489,10 +491,7 @@ class RadioChronicle:
         except KeyboardInterrupt, e:
             self.logger.warning("Ctrl-C detected at input, exiting")
         self.inLoop = False
-        self.saveSample()   #This function call is executed on exit. So we can not be sure about the final sample volume params
-        if self.audioFile:  #that's wy we'd better close the file manualy
-            self.audioFile.close()
-            self.audioFile = None
+        self.saveSample()
         self.closeInputStream()
         self.closeOutputStream()
         self.logger.info("Done")
