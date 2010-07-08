@@ -20,7 +20,6 @@ from sys import argv, exit
 from thread import start_new_thread
 from time import sleep, strftime
 from traceback import format_exc
-from os import remove
 import wave
 
 TITLE = "RadioChronicle v0.3  http://code.google.com/p/radiochronicle"
@@ -383,12 +382,6 @@ class RadioChronicle:
         if not self.recording:
             return True
         try:
-            if not self.audioFile: # Creating the file if necessary
-                self.audioFile = wave.open(self.fileName, 'wb')
-                self.audioFile.setnchannels(self.numOutputChannels)
-                self.audioFile.setsampwidth(self.audioBytes)
-                self.audioFile.setframerate(self.sampleRate)
-
             if self.sampleLength:
                 finalSample = True
             else:
@@ -398,28 +391,32 @@ class RadioChronicle:
                 finalSample = False
 
             self.audioFileLength += self.sampleLength
+            recordLength = (float(self.audioFileLength) / self.outputSecondSize)
 
-            self.audioFile.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end, if needed
+            if recordLength>self.minRecordingLength: #The save-to-file process starts only when the sample is long enougth
+                if not self.audioFile: # Creating the file if necessary
+                    self.audioFile = wave.open(self.fileName, 'wb')
+                    self.audioFile.setnchannels(self.numOutputChannels)
+                    self.audioFile.setsampwidth(self.audioBytes)
+                    self.audioFile.setframerate(self.sampleRate)
 
-            self.sample = ''
-            self.sampleLength = 0
+                self.audioFile.writeframes(self.sample[:self.sampleLength]) # Removing extra silence at the end, if needed
 
-            if finalSample or (not self.inLoop):
-                self.recording = False
-                self.audioFile.close()
-                self.audioFile = None
-                recordLength = (float(self.audioFileLength) / self.outputSecondSize)
-                if recordLength >= self.minRecordingLength:
+                self.sample = ''
+                self.sampleLength = 0
+
+                if finalSample or (not self.inLoop):
+                    self.recording = False
+                    self.audioFile.close()
+                    self.audioFile = None
                     self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, recordLength))
-                else:
-                    try:
-                        remove(self.fileName)
-                        self.logger.info("The record is deleted for beeing too short (%.1f seconds)" % (recordLength))
-                    except Exception, e:
-                        self.logger.warning("Error deleting file: %s: %s" % (e.__class__.__name__, e))
-                        return False
 
-            return True
+                return True
+            elif finalSample or (not self.inLoop):
+                self.recording = False
+                self.logger.info("The record is not save for beeing too short (%.1f seconds)" % (recordLength))
+            else:
+                self.audioFileLength -= self.sampleLength #if the sample is short we do not operate with it, so param changes should be undone
         except Exception, e:
             self.logger.warning("File output error: %s: %s" % (e.__class__.__name__, e))
             return False
