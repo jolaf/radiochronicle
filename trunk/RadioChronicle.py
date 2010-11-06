@@ -5,18 +5,18 @@
 # and Vasily Zakharov (vmzakhar@gmail.com)
 # http://code.google.com/p/radiochronicle/
 #
-# Version 0.5
+# Version 0.5.1
 #
 # Requires PyAudio: http://people.csail.mit.edu/hubert/pyaudio/
 #
 
 from ConfigParser import ConfigParser, NoOptionError, NoSectionError
-from getopt import getopt, GetoptError
+from getopt import getopt
 from logging import getLogger, StreamHandler, NOTSET
 from logging.config import fileConfig
 from signal import signal, SIGTERM
 from struct import unpack
-from sys import argv, exit
+from sys import argv, exit # exit redefined # pylint: disable=W0622
 from thread import start_new_thread
 from time import sleep, strftime
 from traceback import format_exc
@@ -37,12 +37,10 @@ PACK_FORMATS = { 8 : 'b', 16 : '<h', 32 : '<i' }
 
 def mean(iterable):
     '''Returns arithmetic mean of numbers in the specified iterable.'''
-    if not iterable:
-        return 0
-    sum = 0
+    total = 0
     for (n, i) in enumerate(iterable, 1):
-        sum += i
-    return float(sum) / n
+        total += i
+    return float(total) / n
 
 class RadioChronicle:
     # Default parameter values
@@ -66,7 +64,7 @@ class RadioChronicle:
         '''Fully constructs class instance, including reading configuration file and configuring audio devices.'''
         try: # Reading command line options
             configFileName = DEFAULT_CONFIG_FILE_NAME
-            (options, args) = getopt(argv[1:], 'c:h', ('config=', 'help'))
+            (options, args) = getopt(argv[1:], 'c:h', ('config=', 'help')) # args in unused # pylint: disable=W0612
             for (option, value) in options:
                 if option in ('-c', '--config'):
                     configFileName = value.strip()
@@ -102,7 +100,7 @@ class RadioChronicle:
                 try:
                     self.monitor = config.getboolean(section, 'monitor')
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].monitor: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, config.get(section, 'monitor')))
             except NoSectionError: pass
             try:
@@ -111,25 +109,25 @@ class RadioChronicle:
                     value = config.get(section, 'volumeTreshold')
                     self.volumeTreshold = float(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].volumeTreshold: '%s', must be a float" % (section, value))
                 try:
                     value = config.get(section, 'maxPauseLength')
                     self.maxPauseLength = float(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].maxPauseLength: '%s', must be a float" % (section, value))
                 try:
                     value = config.get(section, 'minRecordingLength')
                     self.minRecordingLength = float(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].minRecordingLength: '%s', must be a float" % (section, value))
                 try:
                     value = config.get(section, 'trailLength')
                     self.trailLength = float(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].trailLength: '%s', must be a float" % (section, value))
             except NoSectionError: pass
             try:
@@ -138,31 +136,31 @@ class RadioChronicle:
                     value = config.get(section, 'chunkSize')
                     self.chunkSize = int(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].chunkSize: '%s', must be an integer" % (section, value))
                 try:
                     value = config.get(section, 'inputDevice')
                     self.inputDevice = int(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].inputDevice: '%s', must be an integer" % (section, value))
                 try:
                     value = config.get(section, 'outputDevice')
                     self.outputDevice = int(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].outputDevice: '%s', must be an integer" % (section, value))
                 try:
                     value = config.get(section, 'audioBits')
                     self.audioBits = int(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].audioBits: '%s', must be an integer" % (section, value))
                 try:
                     value = config.get(section, 'sampleRate')
                     self.sampleRate = int(value)
                 except NoOptionError: pass
-                except ValueError, e:
+                except ValueError:
                     raise ValueError("Bad value for [%s].sampleRate: '%s', must be an integer" % (section, value))
                 try:
                     channel = config.get(section, 'channel') # Will be processed later
@@ -176,7 +174,7 @@ class RadioChronicle:
                 raise ValueError("Bad value for volumeTreshold: %.2f, must be 0-100" % self.volumeTreshold)
             if self.maxPauseLength < 0:
                 self.maxPauseLength = 0
-            if self.minRecordingLength <0:
+            if self.minRecordingLength < 0:
                 self.minRecordingLength = 0
             if self.trailLength < 0:
                 self.trailLength = 0
@@ -246,7 +244,7 @@ class RadioChronicle:
             self.numOutputChannels = self.numInputChannels if self.channel == STEREO else 1
             assert self.numOutputChannels > 0
 
-            self.audioBytes = self.audioBits / 8
+            self.audioBytes = self.audioBits // 8
             self.maxVolume = 1 << (self.audioBits - 1)
             self.audioFormat = self.audio.get_format_from_width(self.audioBytes, False)
             self.packFormat = PACK_FORMATS[self.audioBits]
@@ -255,7 +253,7 @@ class RadioChronicle:
             self.outputBlockSize = self.numOutputChannels * self.chunkSize * self.audioBytes
             self.inputSecondSize = self.numInputChannels * self.sampleRate * self.audioBytes
             self.outputSecondSize = self.numOutputChannels * self.sampleRate * self.audioBytes
-            self.chunksInSecond = self.sampleRate / self.chunkSize
+            self.chunksInSecond = self.sampleRate // self.chunkSize
             self.chunksToStop = self.chunksInSecond * self.maxPauseLength
             self.chunksOfFadeout = self.chunksInSecond * self.trailLength
 
@@ -357,7 +355,7 @@ class RadioChronicle:
             # Note: After 5-10 occurences of the above exception system hangs, so stream re-create seems necessary
             self.logger.warning("Audio input error: %s: %s" % (e.__class__.__name__, e))
             self.closeInputStream()
-            self.dump()
+            self.saveSample()
             return None
 
     def writeAudioData(self, data):
@@ -393,7 +391,7 @@ class RadioChronicle:
             self.audioFileLength += self.sampleLength
             recordLength = (float(self.audioFileLength) / self.outputSecondSize)
 
-            if recordLength>self.minRecordingLength: #The save-to-file process starts only when the sample is long enougth
+            if recordLength > self.minRecordingLength: # The save-to-file process starts only when the sample is long enough
                 if not self.audioFile: # Creating the file if necessary
                     self.audioFile = wave.open(self.fileName, 'wb')
                     self.audioFile.setnchannels(self.numOutputChannels)
@@ -405,16 +403,16 @@ class RadioChronicle:
                 self.sample = ''
                 self.sampleLength = 0
 
-                if finalSample or (not self.inLoop):
+                if finalSample or not self.inLoop:
                     self.recording = False
                     self.audioFile.close()
                     self.audioFile = None
-                    self.logger.info("Recording finished, max volume %.2f, %.1f seconds" % (self.localMaxVolume, recordLength))
+                    self.logger.info("Recording finished, max volume %.2f%%, %.1f seconds" % (self.localMaxVolume, recordLength))
 
                 return True
-            elif finalSample or (not self.inLoop):
+            elif finalSample or not self.inLoop:
                 self.recording = False
-                self.logger.info("The record is not save for beeing too short (%.1f seconds)" % (recordLength))
+                self.logger.info("Recording discarded as it's too short (%.1f seconds)" % recordLength)
             else:
                 self.audioFileLength -= self.sampleLength #if the sample is short we do not operate with it, so param changes should be undone
         except Exception, e:
@@ -452,7 +450,7 @@ class RadioChronicle:
                     self.writeAudioData(data)
 
                 # Gathering volume statistics
-                volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in xrange(0, len(data), self.audioBytes)) * 100 + self.maxVolume / 2) / self.maxVolume
+                volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in xrange(0, len(data), self.audioBytes)) * 100 + self.maxVolume // 2) / self.maxVolume
                 # print "%.2f" % volume
                 self.lastSecondVolumes[chunkInSecond] = volume # Logging the sound volume during the last second
                 chunkInSecond = (chunkInSecond + 1) % self.chunksInSecond
@@ -483,7 +481,7 @@ class RadioChronicle:
                             self.inLoop = False
         except Exception, e:
             self.logger.warning("Processing error: %s: %s" % (e.__class__.__name__, e))
-        except KeyboardInterrupt, e:
+        except KeyboardInterrupt:
             self.logger.warning("Ctrl-C detected at input, exiting")
         self.inLoop = False
         self.saveSample()
@@ -500,12 +498,12 @@ class RadioChronicle:
                 if 'help'.startswith(command):
                     print """\nAvailable console commands (first letter is enough):
 Help               - Show this information
-Exit/Quit          - Exit the program immediately
+EXit/Quit          - Exit the program immediately
 Last               - Exit the program after completion of the current file
 Volume             - Print the current mean volume level
 Monitor [on/off]   - Show or toggle monitor status
 Threshold [value]  - Show or set the volume threshold level\n"""
-                elif 'exit'.startswith(command) or 'quit'.startswith(command):
+                elif 'exit'.startswith(command) or 'x' == command or 'quit'.startswith(command):
                     self.logger.info("Exiting")
                     self.inLoop = False
                 elif 'volume'.startswith(command):
@@ -525,21 +523,21 @@ Threshold [value]  - Show or set the volume threshold level\n"""
                         self.inLoop = False
                 elif 'threshold'.startswith(command):
                     if len(inp) < 2:
-                        print "Current volume treshold: %.2f" % self.volumeTreshold # Using print for non-functional logging
+                        print "Current volume treshold: %.2f%%" % self.volumeTreshold # Using print for non-functional logging
                     else:
                         try:
                             self.volumeTreshold = float(inp[1])
                             if not 0 <= self.volumeTreshold <= 100:
-                                raise
-                            self.logger.info("New volume treshold: %.2f" % self.volumeTreshold)
-                        except:
+                                raise ValueError
+                            self.logger.info("New volume treshold: %.2f%%" % self.volumeTreshold)
+                        except ValueError:
                             print "Bad value, expected 0-100" # Using print for non-functional logging
-        except EOFError, e:
+        except EOFError:
             self.logger.warning("Console EOF detected")
         except Exception, e:
             self.logger.warning("Console error: %s: %s\n%s" % (e.__class__.__name__, e, format_exc()))
             self.inLoop = False
-        except KeyboardInterrupt, e:
+        except KeyboardInterrupt:
             self.logger.warning("Ctrl-C detected at console, exiting")
             self.inLoop = False
 
