@@ -1,5 +1,7 @@
 #
-# RadioChronicle
+# RadioChronicle.py
+#
+# A part of RadioChronicle project
 #
 # by Vladimir Yashunsky (vladimir.yashunsky@gmail.com)
 # and Vasily Zakharov (vmzakhar@gmail.com)
@@ -22,7 +24,7 @@ from time import sleep, strftime
 from traceback import format_exc
 import wave
 
-TITLE = "RadioChronicle v0.3  http://code.google.com/p/radiochronicle"
+TITLE = "RadioChronicle v0.5.1  http://code.google.com/p/radiochronicle"
 DEFAULT_CONFIG_FILE_NAME = 'rc.conf'
 
 MONO = -1
