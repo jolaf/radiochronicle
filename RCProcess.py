@@ -43,18 +43,18 @@ def parseHTMLColor(htmlColor):
 def strftime(timeFormat, time):
     '''Formats time to a string, supporting additional format %: which is formatted
        to a ':' in the first half of a second, and to a ' ' in the second half.'''
-    return time.strftime(sub('%:', ':' if time.microsecond < 500000 else ' ', timeFormat))
+    return time.strftime(timeFormat.replace('%:', ':' if time.microsecond < 500000 else ' '))
 
 def strptime(timeFormat, time):
     '''Parses a time string, supporting additional format %:
        which stands for either ':' or ' ' in the input.'''
     try:
-        return datetime.strptime(time, sub('%:', ':', timeFormat))
+        return datetime.strptime(time, timeFormat.replace('%:', ':'))
     except ValueError:
-        return datetime.strptime(time, sub('%:', ' ', timeFormat))
+        return datetime.strptime(time, timeFormat.replace('%:', ' '))
 
 def validateTimeFormat(timeFormat):
-    '''Returns True if specified time format is valid, False otherwise.'''
+    '''Returns True if the specified time format is valid, False otherwise.'''
     try:
         strftime(timeFormat, datetime.today())
         return True
@@ -62,7 +62,7 @@ def validateTimeFormat(timeFormat):
         return False
 
 def validateTime(timeFormat, time):
-    '''Returns True if specified time is correctly formatted
+    '''Returns True if the specified time is correctly formatted
        according to the specified format, False otherwise.'''
     try:
         strptime(timeFormat, time)
@@ -74,13 +74,12 @@ def diffTime(startTime, endTime):
     '''Reverse of relativeTime().
        Removes the common beginning from the endTime.'''
     nd = 0
-    l = min(len(startTime), len(endTime))
-    for i in xrange(l):
+    for i in xrange(min(len(startTime), len(endTime))):
         if not endTime[i].isdigit():
-            if startTime[:i + 1] != endTime[:i + 1]:
-                break
-            else:
+            if startTime[:i + 1] == endTime[:i + 1]:
                 nd = i + 1
+            else:
+                break
     return endTime[nd:]
 
 def relativeTime(startTime, endTime):
@@ -92,11 +91,11 @@ def relativeTime(startTime, endTime):
 def InheritConfigParser(ConfigParser):
     '''Simplifies handling of typed config parameters and handles section inheritance.'''
 
-    def getString(section, option, raw = False, vars = None):
+    def getString(self, section, option, raw = False, vars = None):
         '''Retrieves a string value from the particular section.'''
         return self.get(section, option, raw, vars).strip()
 
-    def getInt(section, option, raw = False, vars = None):
+    def getInt(self, section, option, raw = False, vars = None):
         '''Retrieves an integer value from the particular section.'''
         try:
             value = self.getString(section, option, raw, vars)
@@ -104,7 +103,7 @@ def InheritConfigParser(ConfigParser):
         except ValueError:
             raise ValueError("Bad value for [%s].%s: '%s', must be an integer" % (section, option, value))
 
-    def getFloat(section, option, raw = False, vars = None):
+    def getFloat(self, section, option, raw = False, vars = None):
         '''Retrieves a float value from the particular section.'''
         try:
             value = self.getString(section, option, raw, vars)
@@ -112,72 +111,63 @@ def InheritConfigParser(ConfigParser):
         except ValueError:
             raise ValueError("Bad value for [%s].%s: '%s', must be a float" % (section, option, value))
 
-    def getBoolean(section, option):
+    def getBoolean(self, section, option):
         '''Retrieves a boolean value from the particular section.'''
         try:
             return self.getboolean(section, option)
         except ValueError:
             raise ValueError("Bad value for [%s].%s: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, option, self.getString(section, option)))
 
-    def getSections(section, previousSections = []): # mutable default is ok # pylint: disable=W0102
+    def getSections(self, section, previousSections = []): # generator # mutable default is ok # pylint: disable=W0102
         '''Resursively retrieves list of sections considering inheritance.'''
         if not self.has_section(section):
             raise Exception("Section [%s] not found" % section)
-        sections = [str(section)]
+        yield section
+        sections = [section]
         ps = previousSections + sections
         if self.has_option(section, 'inherit'):
             for s in self.get(section, 'inherit').split():
                 if s in ps:
                     raise ValueError("Inheritance recursion detected: %s -> %s" % (section, s))
-                sections.extend(self.getSections(s, ps))
-        return sections
+                for section in self.getSections(s, ps):
+                    yield section
 
-    def getValue(section, option, default, raw = False, vars = None):
+    def _getValue(self, section, option, default, raw = False, vars = None)
+        t = type(default)
+        if t == bool:
+            return self.getBoolean(section, option)
+        if t == float:
+            return self.getFloat(section, option, raw, vars)
+        if t == int:
+            return self.getInt(section, option, raw, vars)
+        if t == str:
+            return self.getString(section, option, raw, vars)
+        return t(self.getString(section, option, raw, vars))
+
+    def getValue(self, section, option, default, raw = False, vars = None):
         '''Retrieves a value, considering section inheritance and using default's type.'''
         for section in self.getSections(section):
             if self.has_option(section, option):
-                t = type(default)
-                if t == bool:
-                    return self.getBoolean(section, option)
-                if t == float:
-                    return self.getFloat(section, option, raw, vars)
-                if t == int:
-                    return self.getInt(section, option, raw, vars)
-                if t == str:
-                    return self.getString(section, option, raw, vars)
-                return t(self.getString(section, option, raw, vars))
-        else:
-            return default
+                return self._getValue(section, option, default, raw = False, vars = None)
+        return default
 
-    def getValues(section, defaults, allowUnknown = False, returnDefaults = False, raw = False, vars = None):
+    def getValues(self, section, defaults, allowUnknown = False, returnDefaults = False, raw = False, vars = None): # generator
         '''Retrieves the specified values, considering section inheritance and using defaults' types.'''
         unset = dict(defaults)
-        ret = {}
         for section in self.getSections(section):
             for option in self.options(section):
                 for option in (default for default in defaults if default.lower() == option): # single iteration only
                     if option in unset:
-                        t = type(defaults[option])
-                        if t == bool:
-                            value = self.getBoolean(section, option)
-                        elif t == float:
-                            value = self.getFloat(section, option, raw, vars)
-                        elif t == int:
-                            value = self.getInt(section, option, raw, vars)
-                        elif t == str:
-                            value = self.getString(section, option, raw, vars)
-                        else:
-                            value = t(self.getString(section, option, raw, vars))
-                        ret[option] = value
+                        yield (option, self._getValue(section, option, defaults[option], raw = False, vars = None))
                         del unset[option]
                         if not unset and allowUnknown:
-                            return ret
+                            return
                     break
                 elif not allowUnknown:
                     raise ValueError("Unknown option [%s].%s" % (section, option))
         if returnDefaults:
-            ret.update(unset)
-        return ret
+            for (option, value) in unset.iteritems():
+                yield (option, value)
 
 class Configurable(object):
     '''Describes an object configurable using an InheritConfigParser section.'''
@@ -222,9 +212,9 @@ class TimePoint(object):
                 # ToDo: Add separate checks for Start and End points
                 self.fromStart = self.toEnd = arg in (self.START, self.END)
                 self.fromNext = self.toPrev = arg in (self.NEXT, self.PREV)
-                self.cut = arg == self.CUT
+                self.cut = (arg == self.CUT)
             elif arg in (self.SKIP, self.KEEP):
-                self.keep = arg == self.KEEP
+                self.keep = (arg == self.KEEP)
             else:
                 raise ValueError("Unknown time point specifier%s: '%s'" % ((' at %s' % location) if location else '', arg))
 
@@ -269,7 +259,7 @@ class InputFile(object):
     def read(self, nSamples):
         ret = self.wave.readframes(nSamples)
         assert len(ret) == nSamples * self.sampleSize
-        return
+        return ret
 
     def rewind(self):
         self.wave.rewind()
@@ -285,7 +275,7 @@ class Input(Configurable):
     NEXT_FILE = PREVIOUS_FILE = 2
     CUT_FILE = 3
 
-    STEREO 0
+    STEREO = 0
     LEFT = 1
     RIGHT = 2
     MIX = 3
@@ -307,7 +297,7 @@ class Input(Configurable):
         self.endPoint = TimePoint(self.endPoint, '[%s].endPoint' % section) if self.endPoint else TimePoint(DATETIME_MAX)
         if self.channels:
             try:
-                self.channels = self.CHANNEL_NUMBERS.get(self.channels.upper())
+                self.channels = self.CHANNEL_NUMBERS[self.channels.upper()]
             except KeyError:
                 raise ValueError("Bad channels specification at [%s].channels: '%s'" % (section, self.channels))
         else:
