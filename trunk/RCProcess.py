@@ -12,7 +12,7 @@
 #
 
 from ConfigParser import ConfigParser, NoOptionError, NoSectionError
-from datetime import datetime, timedelta, min as DATETIME_MIN, max as DATETIME_MAX
+from datetime import datetime, timedelta
 from getopt import getopt
 from glob import glob
 from inspect import getmembers
@@ -23,7 +23,7 @@ from signal import signal, SIGTERM
 from struct import unpack
 from sys import argv, exit # exit redefined # pylint: disable=W0622
 from thread import start_new_thread
-from time import sleep, strftime
+from time import sleep
 from traceback import format_exc
 import audioop
 import wave
@@ -132,7 +132,7 @@ def InheritConfigParser(ConfigParser):
                 for section in self.getSections(s, ps):
                     yield section
 
-    def _getValue(self, section, option, default, raw = False, vars = None)
+    def sectionGetValue(self, section, option, default, raw = False, vars = None):
         t = type(default)
         if t == bool:
             return self.getBoolean(section, option)
@@ -148,7 +148,7 @@ def InheritConfigParser(ConfigParser):
         '''Retrieves a value, considering section inheritance and using default's type.'''
         for section in self.getSections(section):
             if self.has_option(section, option):
-                return self._getValue(section, option, default, raw = False, vars = None)
+                return self.sectionGetValue(section, option, default, raw, vars)
         return default
 
     def getValues(self, section, defaults, allowUnknown = False, returnDefaults = False, raw = False, vars = None): # generator
@@ -158,13 +158,14 @@ def InheritConfigParser(ConfigParser):
             for option in self.options(section):
                 for option in (default for default in defaults if default.lower() == option): # single iteration only
                     if option in unset:
-                        yield (option, self._getValue(section, option, defaults[option], raw = False, vars = None))
+                        yield (option, self.sectionGetValue(section, option, defaults[option], raw, vars))
                         del unset[option]
                         if not unset and allowUnknown:
                             return
                     break
-                elif not allowUnknown:
-                    raise ValueError("Unknown option [%s].%s" % (section, option))
+                else:
+                    if not allowUnknown:
+                        raise ValueError("Unknown option [%s].%s" % (section, option))
         if returnDefaults:
             for (option, value) in unset.iteritems():
                 yield (option, value)
@@ -173,9 +174,9 @@ class Configurable(object):
     '''Describes an object configurable using an InheritConfigParser section.'''
 
     def __init__(self, config, section):
+        defaults = dict((name, value) for (name, value) in getmembers(self, lambda x: not callable(x)) if name[:1].islower())
         self.config = config
         self.section = section
-        defaults = dict((name, value) for (name, value) in getmembers(self, lambda x: not callable(x)) if name[:1].islower())
         for (field, value) in config.getValues(section, defaults):
             setattr(self, field, value)
 
@@ -222,9 +223,11 @@ class TimePoint(object):
         return self.time.__cmp__(other.time)
 
     def matchStart(self, startTime, endTime):
+        pass
         # ToDo
 
     def matchEnd(self, startTime, endTime):
+        pass
         # ToDo
 
 class InputFile(object):
@@ -293,8 +296,8 @@ class Input(Configurable):
         Configurable.__init__(self, config, section)
         if not validateTimeFormat(fileNameFormat):
             raise ValueError("Bad file name format at [%s].fileNameFormat: '%s'" % (section, self.fileNameFormat))
-        self.startPoint = TimePoint(self.startPoint, '[%s].startPoint' % section) if self.startPoint else TimePoint(DATETIME_MIN)
-        self.endPoint = TimePoint(self.endPoint, '[%s].endPoint' % section) if self.endPoint else TimePoint(DATETIME_MAX)
+        self.startPoint = TimePoint(self.startPoint, '[%s].startPoint' % section) if self.startPoint else TimePoint(datetime.min)
+        self.endPoint = TimePoint(self.endPoint, '[%s].endPoint' % section) if self.endPoint else TimePoint(datetime.max)
         if self.channels:
             try:
                 self.channels = self.CHANNEL_NUMBERS[self.channels.upper()]
@@ -331,8 +334,7 @@ class Input(Configurable):
                 else:
                     return
 
-    @staticmethod
-    def openFiles(files): # generator
+    def openFiles(self, files): # generator
         prev = None
         self.startTime = self.endTime = None
         for (time, fileName) in files:
@@ -345,8 +347,8 @@ class Input(Configurable):
                 if not self.startTime or f.endTime < self.startTime:
                     continue
             if not self.endTime:
-                self.endTime = self.startPoint.matchEnd(f.startTime, f.endTime)
-            if f.endTime > self.startTime and not self.endTime
+                self.endTime = self.endPoint.matchEnd(f.startTime, f.endTime)
+            if f.endTime > self.startTime and not self.endTime:
                 yield f
 
     def load(self):
@@ -454,7 +456,6 @@ class RCProcess:
             except NoSectionError: pass
             try:
                 section = 'audio'
-                try:
                 try:
                     value = config.get(section, 'audioBits')
                     self.audioBits = int(value)
