@@ -40,12 +40,12 @@ PACK_FORMATS = { 8 : 'b', 16 : '<h', 32 : '<i' }
 
 def mean(iterable):
     '''Returns arithmetic mean of numbers in the specified iterable.'''
-    total = 0
+    total = n = 0
     for (n, i) in enumerate(iterable, 1):
         total += i
     return float(total) / n
 
-class RadioChronicle:
+class RadioChronicle: # pylint: disable=R0902
     # Default parameter values
     fileNameFormat = './RC-%Y%m%d-%H%M%S.wav'
     monitor = False
@@ -63,7 +63,7 @@ class RadioChronicle:
     audio = None
     logger = None
 
-    def __init__(self):
+    def __init__(self): # pylint: disable=R0915
         '''Fully constructs class instance, including reading configuration file and configuring audio devices.'''
         try: # Reading command line options
             configFileName = DEFAULT_CONFIG_FILE_NAME
@@ -95,6 +95,7 @@ class RadioChronicle:
         print # Empty line to console only
         try: # Applying configuration
             channel = 'MONO'
+            value = None
             try:
                 section = 'general'
                 try:

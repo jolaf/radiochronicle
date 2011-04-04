@@ -88,14 +88,14 @@ def relativeTime(startTime, endTime):
     assert len(startTime) >= len(endTime)
     return startTime[:len(startTime) - len(endTime)] + endTime
 
-def InheritConfigParser(ConfigParser):
+class InheritConfigParser(ConfigParser):
     '''Simplifies handling of typed config parameters and handles section inheritance.'''
 
-    def getString(self, section, option, raw = False, vars = None):
+    def getString(self, section, option, raw = False, vars = None): # pylint: disable=W0622
         '''Retrieves a string value from the particular section.'''
         return self.get(section, option, raw, vars).strip()
 
-    def getInt(self, section, option, raw = False, vars = None):
+    def getInt(self, section, option, raw = False, vars = None): # pylint: disable=W0622
         '''Retrieves an integer value from the particular section.'''
         try:
             value = self.getString(section, option, raw, vars)
@@ -103,7 +103,7 @@ def InheritConfigParser(ConfigParser):
         except ValueError:
             raise ValueError("Bad value for [%s].%s: '%s', must be an integer" % (section, option, value))
 
-    def getFloat(self, section, option, raw = False, vars = None):
+    def getFloat(self, section, option, raw = False, vars = None): # pylint: disable=W0622
         '''Retrieves a float value from the particular section.'''
         try:
             value = self.getString(section, option, raw, vars)
@@ -132,7 +132,7 @@ def InheritConfigParser(ConfigParser):
                 for section in self.getSections(s, ps):
                     yield section
 
-    def sectionGetValue(self, section, option, default, raw = False, vars = None):
+    def sectionGetValue(self, section, option, default, raw = False, vars = None): # pylint: disable=W0622
         t = type(default)
         if t == bool:
             return self.getBoolean(section, option)
@@ -144,14 +144,14 @@ def InheritConfigParser(ConfigParser):
             return self.getString(section, option, raw, vars)
         return t(self.getString(section, option, raw, vars))
 
-    def getValue(self, section, option, default, raw = False, vars = None):
+    def getValue(self, section, option, default, raw = False, vars = None): # pylint: disable=W0622
         '''Retrieves a value, considering section inheritance and using default's type.'''
         for section in self.getSections(section):
             if self.has_option(section, option):
                 return self.sectionGetValue(section, option, default, raw, vars)
         return default
 
-    def getValues(self, section, defaults, allowUnknown = False, returnDefaults = False, raw = False, vars = None): # generator
+    def getValues(self, section, defaults, allowUnknown = False, returnDefaults = False, raw = False, vars = None): # generator # pylint: disable=W0622
         '''Retrieves the specified values, considering section inheritance and using defaults' types.'''
         unset = dict(defaults)
         for section in self.getSections(section):
@@ -190,45 +190,54 @@ class TimePoint(object):
     KEEP = 'KEEP'	# If timepoint is outside any file, start from (end by) exactly that point (keep silence)
 
     time = None
-    fromStart = toEnd = True	# If time is set, exactly one of fromStart/toEnd, fromNext/toPrev and cut must be True
-    fromNext = toPrev = False
-    cut = False		
+    fromThis = True	# If time is set, exactly one of fromStart/toEnd, fromNext/toPrev and cut must be True
+    fromNext = False
     keep = False
 
-    def __init__(self, timeFormat, s, location = ''): # ToDo: do we need time format here?
-        if type(s) == datetime:
-            self.time = s
+    def __init__(self, isStart, time, timeFormat, location = None):
+        self.isStart = isStart
+        if type(time) == datetime:
+            self.time = time
             return
-        args = s.split()
+        args = time.split()
         if not args:
             raise ValueError("Date not specified%s" % ((' at %s' % location) if location else ''))
         time = args[0]
         try:
             self.time = strptime(timeFormat, time)
-        except ValueError, e:
+        except ValueError:
             raise ValueError("Format '%s' is not matched by the data%s: '%s'" % (timeFormat, (' at %s' % location) if location else '', time))
+        inSet = outSet = False
         for arg in (arg.upper() for arg in args[1:]):
-            # ToDo: Make sure only one specifier of each kind exists?
             if arg in (self.START, self.END, self.NEXT, self.PREV, self.CUT):
-                # ToDo: Add separate checks for Start and End points
-                self.fromStart = self.toEnd = arg in (self.START, self.END)
-                self.fromNext = self.toPrev = arg in (self.NEXT, self.PREV)
-                self.cut = (arg == self.CUT)
+                if arg in (self.END, self.PREV) if isStart else (self.START, self.NEXT):
+                    raise ValueError("Unexpected %s time point specifier%s: '%s', allowed %s" % ('start' if isStart else 'end', (' at %s' % location) if location else '', arg, ', '.join((self.START, self.NEXT) if isStart else (self.END, self.PREV) + (self.CUT, self.SKIP, self.KEEP))))
+                if inSet:
+                    raise ValueError("Too many time point specifiers%s: '%s', allowed %s" % ((' at %s' % location) if location else ''))
+                if arg in (self.NEXT, self.PREV):
+                    self.fromThis = False
+                    self.fromNext = True
+                elif arg == self.CUT:
+                    self.fromThis = False
+                inSet = True
             elif arg in (self.SKIP, self.KEEP):
+                if outSet:
+                    raise ValueError("Too many time point specifiers%s: '%s', allowed %s" % ((' at %s' % location) if location else ''))
                 self.keep = (arg == self.KEEP)
+                outSet = True
             else:
                 raise ValueError("Unknown time point specifier%s: '%s'" % ((' at %s' % location) if location else '', arg))
 
     def __cmp__(self, other):
         return self.time.__cmp__(other.time)
 
-    def matchStart(self, startTime, endTime):
-        pass
-        # ToDo
-
-    def matchEnd(self, startTime, endTime):
-        pass
-        # ToDo
+    def match(self, startTime, endTime):
+        if endTime < self.time: # before
+            return None if self.isStart else (self.time if self.keep else endTime)
+        elif startTime <= self.time: # inside
+            return (startTime if self.isStart else endTime) if self.fromThis else None if self.fromNext else self.time
+        else: # after
+            return (self.time if self.keep else startTime) if self.isStart else None
 
 class InputFile(object):
     '''Holds information on the input audio file and methods to access it.'''
@@ -239,9 +248,9 @@ class InputFile(object):
         self.fileName = fileName
         self.startTime = startTime
         self.wave = wave.open(fileName)
-        (self.nChannels, self.audioBytes, self.sampleRate, self.nSamples, compressionType, compressionName) = self.wave.getparams() # compressionName is unused
-        if compressionType != 'NONE':
-            raise ValueError("Unknown compression type '%s' for file %s" % (compressionType, fileName))
+        (self.nChannels, self.audioBytes, self.sampleRate, self.nSamples, self.compressionType, self.compressionName) = self.wave.getparams()
+        if self.compressionType != 'NONE':
+            raise ValueError("Unknown compression type '%s' for file %s" % (self.compressionType, fileName))
         self.audioBits = self.audioBytes * 8
         self.sampleSize = self.nChannels * self.audioBytes
         self.length = timedelta(seconds = float(self.nSamples) / self.sampleRate)
@@ -294,17 +303,17 @@ class Input(Configurable):
 
     def __init__(self, config, section):
         Configurable.__init__(self, config, section)
-        if not validateTimeFormat(fileNameFormat):
+        if not validateTimeFormat(self.fileNameFormat):
             raise ValueError("Bad file name format at [%s].fileNameFormat: '%s'" % (section, self.fileNameFormat))
-        self.startPoint = TimePoint(self.startPoint, '[%s].startPoint' % section) if self.startPoint else TimePoint(datetime.min)
-        self.endPoint = TimePoint(self.endPoint, '[%s].endPoint' % section) if self.endPoint else TimePoint(datetime.max)
+        self.startPoint = TimePoint(True, *(self.startPoint, '[%s].startPoint' % section) if self.startPoint else datetime.min)
+        self.endPoint = TimePoint(False, *(self.endPoint, '[%s].endPoint' % section) if self.endPoint else datetime.max)
         if self.channels:
             try:
                 self.channels = self.CHANNEL_NUMBERS[self.channels.upper()]
             except KeyError:
                 raise ValueError("Bad channels specification at [%s].channels: '%s'" % (section, self.channels))
         else:
-            self.channels = STEREO
+            self.channels = self.STEREO
 
     @staticmethod
     def getFileTimes(fileNameFormat): # generator
@@ -317,7 +326,6 @@ class Input(Configurable):
     @staticmethod
     def preSortFiles(files, startTime, endTime): # generator
         assert startTime <= endTime
-        ret = []
         started = False
         prev = None
         for (time, fileName) in sorted(files):
@@ -343,20 +351,21 @@ class Input(Configurable):
                 raise ValueError("Files intersect in time: %s start < %s end" % (f, prev))
             prev = f
             if not self.startTime:
-                self.startTime = self.startPoint.matchStart(f.startTime, f.endTime)
-                if not self.startTime or f.endTime < self.startTime:
+                self.startTime = self.startPoint.match(f.startTime, f.endTime)
+                if not self.startTime:
                     continue
-            if not self.endTime:
-                self.endTime = self.endPoint.matchEnd(f.startTime, f.endTime)
-            if f.endTime > self.startTime and not self.endTime:
-                yield f
+            endTime = self.endPoint.match(f.startTime, f.endTime)
+            if not endTime:
+                return
+            yield f
+            self.endTime = endTime
 
     def load(self):
-        self.files = tuple(self.openFiles(self.preSortFiles(self.getFileNames(self.fileNameFormat), self.startPoint.time, self.endPoint.time)))
+        self.files = tuple(self.openFiles(self.preSortFiles(self.getFileTimes(self.fileNameFormat), self.startPoint.time, self.endPoint.time)))
         if not self.files:
-            raise ValueError("No files found matching [%s].fileNameFormat: '%s'" % (section, self.fileNameFormat))
+            raise ValueError("No files found matching [%s].fileNameFormat: '%s'" % (self.section, self.fileNameFormat))
 
-class RCProcess:
+class RCProcess: # pylint: disable=R0902
     # Default parameter values
     logger = None
 
@@ -394,6 +403,7 @@ class RCProcess:
             self.inputs = tuple(Input(config, section) for section in sorted(section for section in config.sections() if section.startswith('input')))
             if not self.inputs:
                 raise Exception("No [input*] sections found")
+            value = None
             try:
                 # ToDo: create wrappers for getting config parameters, for RC also
                 section = 'general'
