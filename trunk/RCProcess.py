@@ -10,6 +10,8 @@
 #
 # Version 0.1
 #
+# Requires webcolors: http://pypi.python.org/pypi/webcolors/
+#
 
 from ConfigParser import ConfigParser, NoOptionError, NoSectionError
 from datetime import datetime, timedelta
@@ -18,27 +20,63 @@ from glob import glob
 from inspect import getmembers
 from logging import getLogger, StreamHandler, NOTSET
 from logging.config import fileConfig
-from re import sub
+from re import match, split, sub, I
 from signal import signal, SIGTERM
 from struct import unpack
 from sys import argv, exit # exit redefined # pylint: disable=W0622
 from thread import start_new_thread
 from time import sleep
-from traceback import format_exc
-import audioop
 import wave
 
 TITLE = "RCProcess v0.1  http://code.google.com/p/radiochronicle"
 DEFAULT_CONFIG_FILE_NAME = 'rcp.conf'
 
-def parseHTMLColor(htmlColor):
-    '''Parses HTML #rrggbb color.'''
-    htmlColor = htmlColor.strip()
-    if htmlColor[0] == '#':
-        htmlColor = htmlColor[1:]
-    if len(htmlColor) != 6:
-        raise ValueError("Bad HTML color format, expected #rrggbb")
-    return (int(x, 16) for x in (htmlColor[:2], htmlColor[2:4], htmlColor[4:]))
+webcolors = None # Will be imported later
+
+def parseHTMLColor(color):
+    '''Converts all possible color specifications to (R,G,B) tuple.'''
+    color = color.strip()
+    try:
+        return webcolors.name_to_rgb(color)
+    except ValueError:
+        pass
+    if len(color) in (4, 7):
+        try:
+            return webcolors.hex_to_rgb(color)
+        except ValueError:
+            pass
+    if len(color) in (3, 6):
+        try:
+            return webcolors.hex_to_rgb('#' + color)
+        except ValueError:
+            pass
+    try:
+        triplet = tuple(split('[ ,]+', match('^(?:rgb)?\s*\(\s*(.*?)\s*\)$', color, I).group(1)))
+        if len(triplet) != 3:
+            raise ValueError
+        try:
+            for value in triplet:
+                if value[-1] != '%':
+                    break
+                value = float(value[:-1])
+                if value < 0 or value > 100:
+                    break
+            else:
+                return webcolors.rgb_percent_to_rgb(triplet)
+        except ValueError:
+            pass
+        try:
+            triplet = tuple(int(i) for i in triplet)
+            for value in triplet:
+                if value < 0 or value > 255:
+                    break
+            else:
+                return triplet
+        except Exception:
+            pass
+    except Exception:
+        pass
+    raise ValueError("Couldn't identify color: %s" % color)
 
 def strftime(timeFormat, time):
     '''Formats time to a string, supporting additional format %: which is formatted
@@ -170,17 +208,56 @@ class InheritConfigParser(ConfigParser):
             for (option, value) in unset.iteritems():
                 yield (option, value)
 
-class Configurable(object):
+class Configurable(object): # pylint: disable=R0903
     '''Describes an object configurable using an InheritConfigParser section.'''
 
-    def __init__(self, config, section):
-        defaults = dict((name, value) for (name, value) in getmembers(self, lambda x: not callable(x)) if name[:1].islower())
-        self.config = config
-        self.section = section
-        for (field, value) in config.getValues(section, defaults):
-            setattr(self, field, value)
+    _booleanStates = { '1': True,  'yes': True,  'true' : True,  'on' : True,
+                       '0': False, 'no' : False, 'false': False, 'off': False }
 
-class TimePoint(object):
+    def __init__(self, config, section, allowUnknown = False, raw = False, vars = None): # pylint: disable=W0622,R0913
+        config = dict(sum(reversed(config.items(s, raw, vars) for s in self.getSections(config, section, raw, vars)), []))
+        for (field, default) in getmembers(self, lambda member: not callable(member) and member.__name__[:1].islower()):
+            if field.lower() not in config:
+                continue
+            value = config.pop(field.lower()).strip()
+            t = type(default)
+            try:
+                if t == bool:
+                    expected = '1/yes/true/on or 0/no/false/off'
+                    value = self._booleanStates[value.lower()]
+                elif t == float:
+                    expected = 'a float'
+                    value = float(value)
+                elif t == int:
+                    expected = 'an integer'
+                    value = int(value)
+                elif t != str:
+                    expected = 'suitable for constructing class %s' % t.__class__.__name__
+                    value = t(value)
+            except:
+                raise ValueError("Bad value for [%s].%s: '%s', must be %s" % (section, field, value, expected))
+            setattr(self, field, value)
+        if not allowUnknown:
+            for option in config:
+                raise ValueError("Unknown option [%s].%s" % (section, option))
+
+    @staticmethod
+    def getSections(config, section, previousSections = [], raw = False, vars = None): # generator # mutable default is ok # pylint: disable=W0102,W0622
+        '''Resursively retrieves list of sections considering inheritance.'''
+        if not config.has_section(section):
+            raise Exception("Section [%s] not found" % section)
+        ps = previousSections + [section]
+        yield section
+        if config.has_option(section, 'inherit'):
+            for s in split('[ ,]+', config.get(section, 'inherit', raw, vars)):
+                if s in ps:
+                    raise ValueError("Inheritance recursion detected: %s -> %s" % (section, s))
+                if not config.has_section(s):
+                    raise ValueError("Inherited section not found: %s -> %s" % (section, s))
+                for section in Configurable.getSections(config, s, ps, raw, vars):
+                    yield section
+
+class TimePoint(object): # pylint: disable=R0903
     START = 'START'	# If timepoint is inside the file, start from the beginning of that file
     END = 'END'		# If timepoint is inside the file, end by the end of that file
     NEXT = 'NEXT'	# If timepoint is inside the file, start from the beginning of the next file
@@ -303,6 +380,7 @@ class Input(Configurable):
 
     def __init__(self, config, section):
         Configurable.__init__(self, config, section)
+        self.section = section
         if not validateTimeFormat(self.fileNameFormat):
             raise ValueError("Bad file name format at [%s].fileNameFormat: '%s'" % (section, self.fileNameFormat))
         self.startPoint = TimePoint(True, *(self.startPoint, '[%s].startPoint' % section) if self.startPoint else datetime.min)
@@ -552,13 +630,11 @@ class RCProcess: # pylint: disable=R0902
             if self.channel == None:
                 raise ValueError("Bad value for channel: %s, must be LEFT/RIGHT/STEREO/ALL/MONO or a number of 1 or more" % channel)
 
-            # Accessing PyAudio engine
+            # Accessing webcolors engine
             try:
-                from pyaudio import PyAudio
+                import webcolors # pylint: disable=W0621
             except ImportError, e:
-                raise ImportError("%s: %s\nPlease install PyAudio: http://people.csail.mit.edu/hubert/pyaudio" % (e.__class__.__name__, e))
-            self.audio = PyAudio()
-            print "%s\n" % self.deviceInfo() # Using print for non-functional logging
+                raise ImportError("%s: %s\nPlease install webcolors: http://pypi.python.org/pypi/webcolors/" % (e.__class__.__name__, e))
 
             # Accessing audio devices
             try:
