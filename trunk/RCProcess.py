@@ -208,41 +208,36 @@ class InheritConfigParser(ConfigParser):
             for (option, value) in unset.iteritems():
                 yield (option, value)
 
-class Configurable(object): # pylint: disable=R0903
-    '''Describes an object configurable using an InheritConfigParser section.'''
+class Configurable(object):
+    '''Describes an object configurable with a ConfigParser section.'''
 
-    _booleanStates = { '1': True,  'yes': True,  'true' : True,  'on' : True,
-                       '0': False, 'no' : False, 'false': False, 'off': False }
+    _expects = { bool: '%s or %s' % ('/'.join(sorted(key for (key, value) in ConfigParser._boolean_states.iteritems() if value)), # pylint: disable=W0212
+                                     '/'.join(sorted(key for (key, value) in ConfigParser._boolean_states.iteritems() if not value))), # pylint: disable=W0212
+                 float: 'a float', int: 'an integer' }
 
-    def __init__(self, config, section, allowUnknown = False, raw = False, vars = None): # pylint: disable=W0622,R0913
-        config = dict(sum(reversed(config.items(s, raw, vars) for s in self.getSections(config, section, raw, vars)), []))
-        for (field, default) in getmembers(self, lambda member: not callable(member) and member.__name__[:1].islower()):
-            if field.lower() not in config:
-                continue
-            value = config.pop(field.lower()).strip()
+    def __init__(self, config, section, allowUnknown = False, raw = False, vars = None): # pylint: disable=W0622
+        fields = ((field, default) for (field, default) in getmembers(self, lambda member: not callable(member)) if field[:1].islower())
+        self.config = dict(sum(reversed(tuple(tuple((option, (s, value.strip())) for (option, value) in config.items(s, raw, vars) if option != 'inherit') for s in self.getSections(config, section, raw, vars))), ()))
+        for (field, default, section, value) in ((field, default) + self.config.pop(field.lower()) for (field, default) in fields if field.lower() in self.config):
             t = type(default)
             try:
                 if t == bool:
-                    expected = '1/yes/true/on or 0/no/false/off'
-                    value = self._booleanStates[value.lower()]
+                    value = ConfigParser._boolean_states[value.lower()] # pylint: disable=W0212
                 elif t == float:
-                    expected = 'a float'
                     value = float(value)
                 elif t == int:
-                    expected = 'an integer'
                     value = int(value)
-                elif t != str:
-                    expected = 'suitable for constructing class %s' % t.__class__.__name__
+                elif t != str and default != None:
                     value = t(value)
             except:
-                raise ValueError("Bad value for [%s].%s: '%s', must be %s" % (section, field, value, expected))
+                raise ValueError("Bad value for [%s].%s: '%s', must be %s" % (section, field, value, self._expects.get(t) or 'suitable for constructing class %s' % t.__class__.__name__))
             setattr(self, field, value)
         if not allowUnknown:
-            for option in config:
+            for (option, (section, value)) in self.config.iteritems():
                 raise ValueError("Unknown option [%s].%s" % (section, option))
 
     @staticmethod
-    def getSections(config, section, previousSections = [], raw = False, vars = None): # generator # mutable default is ok # pylint: disable=W0102,W0622
+    def getSections(config, section, raw = False, vars = None, previousSections = []): # generator # mutable default is ok # pylint: disable=W0102,W0622
         '''Resursively retrieves list of sections considering inheritance.'''
         if not config.has_section(section):
             raise Exception("Section [%s] not found" % section)
@@ -254,7 +249,7 @@ class Configurable(object): # pylint: disable=R0903
                     raise ValueError("Inheritance recursion detected: %s -> %s" % (section, s))
                 if not config.has_section(s):
                     raise ValueError("Inherited section not found: %s -> %s" % (section, s))
-                for section in Configurable.getSections(config, s, ps, raw, vars):
+                for section in Configurable.getSections(config, s, raw, vars, ps):
                     yield section
 
 class TimePoint(object): # pylint: disable=R0903
