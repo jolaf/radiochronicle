@@ -126,88 +126,6 @@ def relativeTime(startTime, endTime):
     assert len(startTime) >= len(endTime)
     return startTime[:len(startTime) - len(endTime)] + endTime
 
-class InheritConfigParser(ConfigParser):
-    '''Simplifies handling of typed config parameters and handles section inheritance.'''
-
-    def getString(self, section, option, raw = False, vars = None): # pylint: disable=W0622
-        '''Retrieves a string value from the particular section.'''
-        return self.get(section, option, raw, vars).strip()
-
-    def getInt(self, section, option, raw = False, vars = None): # pylint: disable=W0622
-        '''Retrieves an integer value from the particular section.'''
-        try:
-            value = self.getString(section, option, raw, vars)
-            return int(value)
-        except ValueError:
-            raise ValueError("Bad value for [%s].%s: '%s', must be an integer" % (section, option, value))
-
-    def getFloat(self, section, option, raw = False, vars = None): # pylint: disable=W0622
-        '''Retrieves a float value from the particular section.'''
-        try:
-            value = self.getString(section, option, raw, vars)
-            return float(value)
-        except ValueError:
-            raise ValueError("Bad value for [%s].%s: '%s', must be a float" % (section, option, value))
-
-    def getBoolean(self, section, option):
-        '''Retrieves a boolean value from the particular section.'''
-        try:
-            return self.getboolean(section, option)
-        except ValueError:
-            raise ValueError("Bad value for [%s].%s: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, option, self.getString(section, option)))
-
-    def getSections(self, section, previousSections = []): # generator # mutable default is ok # pylint: disable=W0102
-        '''Resursively retrieves list of sections considering inheritance.'''
-        if not self.has_section(section):
-            raise Exception("Section [%s] not found" % section)
-        yield section
-        sections = [section]
-        ps = previousSections + sections
-        if self.has_option(section, 'inherit'):
-            for s in self.get(section, 'inherit').split():
-                if s in ps:
-                    raise ValueError("Inheritance recursion detected: %s -> %s" % (section, s))
-                for section in self.getSections(s, ps):
-                    yield section
-
-    def sectionGetValue(self, section, option, default, raw = False, vars = None): # pylint: disable=W0622
-        t = type(default)
-        if t == bool:
-            return self.getBoolean(section, option)
-        if t == float:
-            return self.getFloat(section, option, raw, vars)
-        if t == int:
-            return self.getInt(section, option, raw, vars)
-        if t == str:
-            return self.getString(section, option, raw, vars)
-        return t(self.getString(section, option, raw, vars))
-
-    def getValue(self, section, option, default, raw = False, vars = None): # pylint: disable=W0622
-        '''Retrieves a value, considering section inheritance and using default's type.'''
-        for section in self.getSections(section):
-            if self.has_option(section, option):
-                return self.sectionGetValue(section, option, default, raw, vars)
-        return default
-
-    def getValues(self, section, defaults, allowUnknown = False, returnDefaults = False, raw = False, vars = None): # generator # pylint: disable=W0622
-        '''Retrieves the specified values, considering section inheritance and using defaults' types.'''
-        unset = dict(defaults)
-        for section in self.getSections(section):
-            for option in self.options(section):
-                for option in (default for default in defaults if default.lower() == option): # single iteration only
-                    if option in unset:
-                        yield (option, self.sectionGetValue(section, option, defaults[option], raw, vars))
-                        del unset[option]
-                        if not unset and allowUnknown:
-                            return
-                    break
-                else:
-                    if not allowUnknown:
-                        raise ValueError("Unknown option [%s].%s" % (section, option))
-        if returnDefaults:
-            for (option, value) in unset.iteritems():
-                yield (option, value)
-
 class Configurable(object):
     '''Describes an object configurable with a ConfigParser section.'''
 
@@ -285,7 +203,7 @@ class TimePoint(object): # pylint: disable=R0903
                 if arg in (self.END, self.PREV) if isStart else (self.START, self.NEXT):
                     raise ValueError("Unexpected %s time point specifier%s: '%s', allowed %s" % ('start' if isStart else 'end', (' at %s' % location) if location else '', arg, ', '.join((self.START, self.NEXT) if isStart else (self.END, self.PREV) + (self.CUT, self.SKIP, self.KEEP))))
                 if inSet:
-                    raise ValueError("Too many time point specifiers%s: '%s', allowed %s" % ((' at %s' % location) if location else ''))
+                    raise ValueError("Too many time point specifiers%s: '%s'" % ((' at %s' % location) if location else '', arg))
                 if arg in (self.NEXT, self.PREV):
                     self.fromThis = False
                     self.fromNext = True
@@ -294,7 +212,7 @@ class TimePoint(object): # pylint: disable=R0903
                 inSet = True
             elif arg in (self.SKIP, self.KEEP):
                 if outSet:
-                    raise ValueError("Too many time point specifiers%s: '%s', allowed %s" % ((' at %s' % location) if location else ''))
+                    raise ValueError("Too many time point specifiers%s: '%s'" % ((' at %s' % location) if location else '', arg))
                 self.keep = (arg == self.KEEP)
                 outSet = True
             else:
@@ -305,11 +223,11 @@ class TimePoint(object): # pylint: disable=R0903
 
     def match(self, startTime, endTime):
         if endTime < self.time: # before
-            return None if self.isStart else (self.time if self.keep else endTime)
+            return None if self.isStart else (self.time if self.keep and self.time != datetime.max else endTime)
         elif startTime <= self.time: # inside
             return (startTime if self.isStart else endTime) if self.fromThis else None if self.fromNext else self.time
         else: # after
-            return (self.time if self.keep else startTime) if self.isStart else None
+            return (self.time if self.keep and self.time != datetime.min else startTime) if self.isStart else None
 
 class InputFile(object):
     '''Holds information on the input audio file and methods to access it.'''
@@ -442,7 +360,7 @@ class RCProcess: # pylint: disable=R0902
     # Default parameter values
     logger = None
 
-    def __init__(self):
+    def __init__(self): # pylint: disable=R0915
         '''Fully constructs class instance, including reading configuration file and configuring audio devices.'''
         try: # Reading command line options
             configFileName = DEFAULT_CONFIG_FILE_NAME
