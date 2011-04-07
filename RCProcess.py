@@ -129,30 +129,44 @@ def relativeTime(startTime, endTime):
 class Configurable(object):
     '''Describes an object configurable with a ConfigParser section.'''
 
-    _expects = { bool: '%s or %s' % ('/'.join(sorted(key for (key, value) in ConfigParser._boolean_states.iteritems() if value)), # pylint: disable=W0212
-                                     '/'.join(sorted(key for (key, value) in ConfigParser._boolean_states.iteritems() if not value))), # pylint: disable=W0212
-                 float: 'a float', int: 'an integer' }
+    INCLUDE = 0
+    DISCARD = 1
+    DENY = 2
+    IGNORE = 3
 
-    def __init__(self, config, section, allowUnknown = False, raw = False, vars = None): # pylint: disable=W0622
-        fields = ((field, default) for (field, default) in getmembers(self, lambda member: not callable(member)) if field[:1].islower())
-        self.config = dict(sum(reversed(tuple(tuple((option, (s, value.strip())) for (option, value) in config.items(s, raw, vars) if option != 'inherit') for s in self.getSections(config, section, raw, vars))), ()))
-        for (field, default, section, value) in ((field, default) + self.config.pop(field.lower()) for (field, default) in fields if field.lower() in self.config):
-            t = type(default)
+    BOOLEAN_VALUES = ConfigParser._boolean_states # pylint: disable=W0212
+
+    CONVERTERS = { bool: lambda value: Configurable.BOOLEAN_VALUES[value.lower()],
+                   float: float,
+                   int: int,
+                   str: lambda value: value,
+                   None.__class__: lambda value: value }
+
+    EXPECTS = { bool: '%s or %s' % ('/'.join(sorted(key for (key, value) in BOOLEAN_VALUES.iteritems() if value)),
+                                    '/'.join(sorted(key for (key, value) in BOOLEAN_VALUES.iteritems() if not value))),
+                float: 'a float',
+                int: 'an integer' }
+
+    def __init__(self, config, section, unknowns = DENY, raw = False, vars = None, defaults = {}): # mutable default ok # pylint: disable=W0102,W0622
+        for (name, value) in defaults.iteritems():
+            setattr(self, name, value)
+        fields = dict((field.lower(), (field, type(default))) for (field, default) in getmembers(self, lambda member: not callable(member)) if field[:1].islower())
+        options = (tuple((option, (section, value.strip())) for (option, value) in config.items(section, raw, vars) if option != 'inherit') for section in self.getSections(config, section, raw, vars))
+        self.config = dict(sum(reversed(tuple(options)), ()))
+        for (option, (section, value)) in self.config.items():
             try:
-                if t == bool:
-                    value = ConfigParser._boolean_states[value.lower()] # pylint: disable=W0212
-                elif t == float:
-                    value = float(value)
-                elif t == int:
-                    value = int(value)
-                elif t != str and default != None:
-                    value = t(value)
-            except:
-                raise ValueError("Bad value for [%s].%s: '%s', must be %s" % (section, field, value, self._expects.get(t) or 'suitable for constructing class %s' % t.__class__.__name__))
-            setattr(self, field, value)
-        if not allowUnknown:
-            for (option, (section, value)) in self.config.iteritems():
-                raise ValueError("Unknown option [%s].%s" % (section, option))
+                (field, typ) = fields[option]
+                try:
+                    setattr(self, field, self.CONVERTERS.get(typ, typ)(value))
+                except:
+                    raise ValueError("Bad value for [%s].%s: '%s', must be %s" % (section, field, value, self.EXPECTS.get(typ) or 'suitable for constructing class %s' % typ.__name__))
+            except KeyError:
+                if unknowns == self.INCLUDE:
+                    setattr(self, option, value)
+                elif unknowns == self.DISCARD:
+                    del self.config[option]
+                elif unknowns == self.DENY:
+                    raise ValueError("Unknown option [%s].%s" % (section, option))
 
     @staticmethod
     def getSections(config, section, raw = False, vars = None, previousSections = []): # generator # mutable default is ok # pylint: disable=W0102,W0622
@@ -355,6 +369,34 @@ class Input(Configurable):
         self.files = tuple(self.openFiles(self.preSortFiles(self.getFileTimes(self.fileNameFormat), self.startPoint.time, self.endPoint.time)))
         if not self.files:
             raise ValueError("No files found matching [%s].fileNameFormat: '%s'" % (self.section, self.fileNameFormat))
+
+class Output(Configurable):
+
+    def __init__(self, config, section):
+        Configurable.__init__(self, config, section)
+
+class Visual(Configurable):
+
+    TAG = 'type'
+
+    def __new__(cls, config, section):
+        if cls != Visual:
+            raise ValueError("Visual.__new__() can only be used to create Visual instances")
+        scn = Configurable(config, section, Configurable.IGNORE, defaults = {Visual.TAG: None}).config.get(Visual.TAG)
+        if not scn:
+            raise ValueError("Can't create Visual: section [%s] doesn't contain option '%s'" % (section, Visual.TAG))
+        (section, className) = scn
+        cls = globals().get(className)
+        if not cls or type(cls) != type or not issubclass(cls, Visual):
+            raise ValueError("Unknown Visual type at [%s].%s: '%s'" % (section, Visual.TAG, className))
+        return Configurable.__new__(cls)
+
+    def __init__(self, config, section):
+        Configurable.__init__(self, config, section)
+
+class Text(Visual):
+    def __init__(self, config, section):
+        Visual.__init__(self, config, section)
 
 class RCProcess: # pylint: disable=R0902
     # Default parameter values
