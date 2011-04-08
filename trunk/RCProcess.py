@@ -386,7 +386,7 @@ class Visual(Configurable):
         if not scn:
             raise ValueError("Can't create Visual: section [%s] doesn't contain option '%s'" % (section, Visual.TAG))
         (section, className) = scn
-        cls = globals().get(className)
+        cls = globals().get(className[:1].upper() + className[1:])
         if not cls or type(cls) != type or not issubclass(cls, Visual):
             raise ValueError("Unknown Visual type at [%s].%s: '%s'" % (section, Visual.TAG, className))
         return Configurable.__new__(cls)
