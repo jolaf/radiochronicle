@@ -720,7 +720,7 @@ class RCProcess: # pylint: disable=R0902
         self.inLoop = False
         self.logger.info("Done")
 
-    def sigTerm(self):
+    def sigTerm(self, signum, frame): # pylint: disable=W0613
         '''SIGTERM handler.'''
         self.logger.warning("SIGTERM caught, exiting")
         self.inLoop = False
