@@ -545,7 +545,7 @@ Threshold [value]  - Show or set the volume threshold level\n"""
             self.logger.warning("Ctrl-C detected at console, exiting")
             self.inLoop = False
 
-    def sigTerm(self):
+    def sigTerm(self, signum, frame): # pylint: disable=W0613
         '''SIGTERM handler.'''
         self.logger.warning("SIGTERM caught, exiting")
         self.inLoop = False
