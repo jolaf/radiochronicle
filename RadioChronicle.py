@@ -6,7 +6,7 @@
 #
 # by Vladimir Yashunsky (vladimir.yashunsky@gmail.com)
 # and Vasily Zakharov (vmzakhar@gmail.com)
-# http://code.google.com/p/radiochronicle/
+# https://github.com/jolaf/radiochronicle
 #
 # Version 0.5.1
 #
