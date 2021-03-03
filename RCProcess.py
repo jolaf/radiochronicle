@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 #
 # RCProcess.py
 #
@@ -8,82 +8,97 @@
 # and Vasily Zakharov (vmzakhar@gmail.com)
 # https://github.com/jolaf/radiochronicle
 #
-# Version 0.1
+# Version 0.6
 #
 # Requires webcolors: http://pypi.python.org/pypi/webcolors/
 #
-
-from ConfigParser import ConfigParser, NoOptionError, NoSectionError
+from configparser import ConfigParser, NoOptionError, NoSectionError
 from datetime import datetime, timedelta
+from enum import Enum, EnumMeta
+from functools import total_ordering
 from getopt import getopt
 from glob import glob
 from inspect import getmembers
+from itertools import chain
 from logging import getLogger, StreamHandler, NOTSET
 from logging.config import fileConfig
-from re import match, split, sub, I
+from re import compile as reCompile
 from signal import signal, SIGTERM
+from statistics import mean
 from struct import unpack
-from sys import argv, exit # exit redefined # pylint: disable=W0622
-from thread import start_new_thread
+from sys import argv, exit as sysExit
+from _thread import start_new_thread
 from time import sleep
-import wave
+from types import FrameType
+from typing import cast, Any, Callable, ClassVar, Final, FrozenSet, Iterable, Iterator, Mapping, NoReturn, Optional, Sequence, Tuple, Type, TypeVar
+from wave import open as waveOpen, Wave_read as WaveReader
 
-TITLE = "RCProcess v0.1  http://code.google.com/p/radiochronicle"
-DEFAULT_CONFIG_FILE_NAME = 'rcp.conf'
+try:
+    from webcolors import name_to_rgb, hex_to_rgb, rgb_percent_to_rgb, IntegerRGB, PercentRGB
+except ImportError as e:
+    raise ImportError(f"{type(e).__name__}: {e}\nPlease install WebColors: http://pypi.python.org/pypi/webcolors") from e
 
-webcolors = None # Will be imported later
+TITLE: Final[str] = "RCProcess v0.2  htts://github.com/jolaf/radiochronicle"
+DEFAULT_CONFIG_FILE_NAME: Final[str] = 'rcp.conf'
 
-def parseHTMLColor(color):
-    '''Converts all possible color specifications to (R,G,B) tuple.'''
+SEPARATOR = reCompile(r'[\s,;]+')
+
+RGB_PATTERN = reCompile(r'^(?:rgb)?\s*\(\s*(.*?)\s*\)$')
+
+def parseHTMLColor(color: str) -> IntegerRGB:
+    '''Converts all possible color specifications to (R, G, B) tuple.'''
     color = color.strip()
     try:
-        return webcolors.name_to_rgb(color)
+        return name_to_rgb(color)
     except ValueError:
         pass
     if len(color) in (4, 7):
         try:
-            return webcolors.hex_to_rgb(color)
+            return hex_to_rgb(color)
         except ValueError:
             pass
     if len(color) in (3, 6):
         try:
-            return webcolors.hex_to_rgb('#' + color)
+            return hex_to_rgb('#' + color)
         except ValueError:
             pass
     try:
-        triplet = tuple(split('[ ,]+', match('^(?:rgb)?\s*\(\s*(.*?)\s*\)$', color, I).group(1)))
-        if len(triplet) != 3:
+        m = RGB_PATTERN.match(color)
+        if not m:
+            raise ValueError()
+        str3 = tuple(SEPARATOR.split(m.group(1)))
+        if len(str3) != 3:
             raise ValueError
         try:
-            for value in triplet:
-                if value[-1] != '%':
+            for t in str3:
+                if t[-1] != '%':
                     break
-                value = float(value[:-1])
+                value = float(t[:-1])
                 if value < 0 or value > 100:
                     break
             else:
-                return webcolors.rgb_percent_to_rgb(triplet)
+                return rgb_percent_to_rgb(cast(PercentRGB, str3))
         except ValueError:
             pass
         try:
-            triplet = tuple(int(i) for i in triplet)
-            for value in triplet:
+            int3 = tuple(int(i) for i in str3)
+            for value in int3:
                 if value < 0 or value > 255:
                     break
             else:
-                return triplet
+                return cast(IntegerRGB, int3)
         except Exception:
             pass
     except Exception:
         pass
-    raise ValueError("Couldn't identify color: %s" % color)
+    raise ValueError(f"Couldn't identify color: {color}")
 
-def strftime(timeFormat, time):
+def strftime(timeFormat: str, time: datetime) -> str:
     '''Formats time to a string, supporting additional format %: which is formatted
        to a ':' in the first half of a second, and to a ' ' in the second half.'''
     return time.strftime(timeFormat.replace('%:', ':' if time.microsecond < 500000 else ' '))
 
-def strptime(timeFormat, time):
+def strptime(timeFormat: str, time: str) -> datetime:
     '''Parses a time string, supporting additional format %:
        which stands for either ':' or ' ' in the input.'''
     try:
@@ -91,7 +106,7 @@ def strptime(timeFormat, time):
     except ValueError:
         return datetime.strptime(time, timeFormat.replace('%:', ' '))
 
-def validateTimeFormat(timeFormat):
+def validateTimeFormat(timeFormat: str) -> bool:
     '''Returns True if the specified time format is valid, False otherwise.'''
     try:
         strftime(timeFormat, datetime.today())
@@ -99,7 +114,7 @@ def validateTimeFormat(timeFormat):
     except ValueError:
         return False
 
-def validateTime(timeFormat, time):
+def validateTime(timeFormat: str, time: str) -> bool:
     '''Returns True if the specified time is correctly formatted
        according to the specified format, False otherwise.'''
     try:
@@ -108,11 +123,11 @@ def validateTime(timeFormat, time):
     except ValueError:
         return False
 
-def diffTime(startTime, endTime):
+def diffTime(startTime: str, endTime: str) -> str:
     '''Reverse of relativeTime().
        Removes the common beginning from the endTime.'''
     nd = 0
-    for i in xrange(min(len(startTime), len(endTime))):
+    for i in range(min(len(startTime), len(endTime))):
         if not endTime[i].isdigit():
             if startTime[:i + 1] == endTime[:i + 1]:
                 nd = i + 1
@@ -120,71 +135,115 @@ def diffTime(startTime, endTime):
                 break
     return endTime[nd:]
 
-def relativeTime(startTime, endTime):
+def relativeTime(startTime: str, endTime: str) -> str:
     '''Reverse of diffTime().
        Left-pads endTime to the length of startTime using startTime's beginning.'''
     assert len(startTime) >= len(endTime)
     return startTime[:len(startTime) - len(endTime)] + endTime
 
-class Configurable(object):
+TConfigurable = TypeVar('TConfigurable', bound = 'Configurable')
+
+class Configurable:
     '''Describes an object configurable with a ConfigParser section.'''
 
-    INCLUDE = 0
-    DISCARD = 1
-    DENY = 2
-    IGNORE = 3
+    Unknowns: ClassVar[EnumMeta] = Enum('Unknowns', ('INCLUDE', 'DISCARD', 'DENY', 'IGNORE'))
 
-    BOOLEAN_VALUES = ConfigParser._boolean_states # pylint: disable=W0212
+    _BOOLEAN_STATES: ClassVar[Mapping[str, bool]] = ConfigParser.BOOLEAN_STATES
 
-    CONVERTERS = { bool: lambda value: Configurable.BOOLEAN_VALUES[value.lower()],
+    _CONVERTERS: ClassVar[Mapping[Type[Any], Callable[[str], Any]]] = { # Mapping a type to a callable returning a value of that type
+                    bool: lambda value: Configurable._BOOLEAN_STATES[value.lower()],
                    float: float,
-                   int: int,
-                   str: lambda value: value,
-                   None.__class__: lambda value: value }
+                     int: int,
+                     str: lambda value: value,
+              type(None): lambda value: value }
 
-    EXPECTS = { bool: '%s or %s' % ('/'.join(sorted(key for (key, value) in BOOLEAN_VALUES.iteritems() if value)),
-                                    '/'.join(sorted(key for (key, value) in BOOLEAN_VALUES.iteritems() if not value))),
-                float: 'a float',
-                int: 'an integer' }
+    _EXPECTS: ClassVar[Mapping[Type[Any], str]] = { # Mapping a type to a human-readable string describing possible values of that type
+                    bool: f"{'/'.join(sorted(key for (key, value) in _BOOLEAN_STATES.items() if value))} or "
+                          f"{'/'.join(sorted(key for (key, value) in _BOOLEAN_STATES.items() if not value))}",
+                   float: "a float",
+                     int: "an integer" }
 
-    def __init__(self, config, section, unknowns = DENY, raw = False, vars = None, defaults = {}): # mutable default ok # pylint: disable=W0102,W0622
-        for (name, value) in defaults.iteritems():
-            setattr(self, name, value)
-        fields = dict((field.lower(), (field, type(default))) for (field, default) in getmembers(self, lambda member: not callable(member)) if field[:1].islower())
-        options = (tuple((option, (section, value.strip())) for (option, value) in config.items(section, raw, vars) if option != 'inherit') for section in self.getSections(config, section, raw, vars))
-        self.config = dict(sum(reversed(tuple(options)), ()))
-        for (option, (section, value)) in self.config.items():
+    SECTION_PREFIX: ClassVar[str] = '' # Can be overriden in subclasses to automatically cut out the standard section name prefix for that class.
+
+    SECTION_SEPARATORS: ClassVar[str] = ' -_' # Can be overriden in subclasses
+
+    def __init__(self, config: ConfigParser, section: str, *, unknowns: Unknowns = Unknowns.DENY, raw: bool = False, vars: Optional[Mapping[str, str]] = None, defaults: Optional[Mapping[str, Any]] = None) -> None: # pylint: disable=redefined-builtin
+        if defaults:
+            for (name, value) in defaults.items():
+                setattr(self, name, value)
+        members = ((field, default) for (field, default) in getmembers(self, lambda member: not callable(member)) if field[0].islower())
+        fields = {field.lower(): (field, type(default)) for (field, default) in members}
+        sections = self._getSections(config, section, raw, vars)
+        options = (tuple((option, (section, value.strip())) for (option, value) in config.items(section, raw, vars) if option != 'inherit') for section in sections)
+        self.config = dict(chain.from_iterable(options))
+        self.section = section
+        self.name = section[len(self.SECTION_PREFIX):].strip(self.SECTION_SEPARATORS) if self.SECTION_PREFIX else section
+        for (option, (section, value)) in self.config.items(): # pylint: disable=redefined-argument-from-local
             try:
                 (field, typ) = fields[option]
                 try:
-                    setattr(self, field, self.CONVERTERS.get(typ, typ)(value))
-                except:
-                    raise ValueError("Bad value for [%s].%s: '%s', must be %s" % (section, field, value, self.EXPECTS.get(typ) or 'suitable for constructing class %s' % typ.__name__))
-            except KeyError:
-                if unknowns == self.INCLUDE:
+                    setattr(self, field, self._valueParser(typ, value))
+                except Exception as e:
+                    raise ValueError(f"Bad value for [{section}].{field}: '{value}', must be {self._getExpects(typ)}") from e
+            except KeyError as e:
+                if unknowns == self.Unknowns.INCLUDE:
                     setattr(self, option, value)
-                elif unknowns == self.DISCARD:
+                elif unknowns == self.Unknowns.DISCARD:
                     del self.config[option]
-                elif unknowns == self.DENY:
-                    raise ValueError("Unknown option [%s].%s" % (section, option))
+                elif unknowns == self.Unknowns.DENY:
+                    raise ValueError(f"Unknown option [{section}].{option}") from e
+
+    @classmethod
+    def loadSections(cls: Type[TConfigurable], config: ConfigParser, **kwargs: Any) -> Sequence[TConfigurable]:
+        '''Creates Configurable objects of this class from all sections in the specified config having the proper prefix.'''
+        return tuple(cls(config, section, **kwargs) for section in sorted(config.sections()) if section.startswith(cls.SECTION_PREFIX))
 
     @staticmethod
-    def getSections(config, section, raw = False, vars = None, previousSections = []): # generator # mutable default is ok # pylint: disable=W0102,W0622
+    def _getSections(config: ConfigParser, section: str, raw: bool = False, vars: Optional[Mapping[str, str]] = None, previousSections: FrozenSet[str] = frozenset()) -> Iterator[str]: # pylint: disable=redefined-builtin
         '''Resursively retrieves list of sections considering inheritance.'''
         if not config.has_section(section):
-            raise Exception("Section [%s] not found" % section)
-        ps = previousSections + [section]
-        yield section
+            raise Exception(f"Section [{section}] not found")
+        ps: FrozenSet[str] = previousSections | {section}
         if config.has_option(section, 'inherit'):
-            for s in split('[ ,]+', config.get(section, 'inherit', raw, vars)):
+            for s in SEPARATOR.split(config.get(section, 'inherit', raw = raw, vars = vars)):
                 if s in ps:
-                    raise ValueError("Inheritance recursion detected: %s -> %s" % (section, s))
+                    raise ValueError(f"Inheritance recursion detected: {section} -> {s}")
                 if not config.has_section(s):
-                    raise ValueError("Inherited section not found: %s -> %s" % (section, s))
-                for section in Configurable.getSections(config, s, raw, vars, ps):
-                    yield section
+                    raise ValueError(f"Inherited section not found: {section} -> {s}")
+                yield from Configurable._getSections(config, s, raw, vars, ps)
+        yield section
 
-class TimePoint(object): # pylint: disable=R0903
+    @classmethod
+    def _getSubclasses(cls: Type[TConfigurable], includeFilter: Callable[[Type[TConfigurable]], Any] = lambda cls: True) -> Iterator[Type[TConfigurable]]:
+        for subClass in cls.__subclasses__():
+            if includeFilter(subClass):
+                yield subClass
+            yield from subClass._getSubclasses() # pylint: disable=protected-access
+
+    @classmethod
+    def loadSectionsWithSubclasses(cls: Type[TConfigurable], config: ConfigParser, includeFilter: Callable[[Type[TConfigurable]], Any] = lambda cls: True, **kwargs: Any) -> Sequence[TConfigurable]:
+        return tuple(chain.from_iterable(subclass.loadSections(config, **kwargs) for subclass in cls._getSubclasses(includeFilter)))
+
+    @staticmethod
+    def _valueParser(typ: Type[Any], value: str) -> Any:
+        if not issubclass(typ, Enum):
+            return Configurable._CONVERTERS.get(typ, typ)(value)
+        value = value.strip().upper()
+        values = tuple(key.upper() for key in typ.__members__)
+        for i in range(1, len(value) + 1):
+            matches = tuple(v for v in values if value[:i] == v[:i])
+            if len(matches) == 1:
+                return typ[matches[0]]
+            if not matches:
+                break
+        raise ValueError(f"Bad value for type {typ.__name__}: {repr(value)}")
+
+    @staticmethod
+    def _getExpects(typ: Type[Any]) -> str:
+        return '/'.join(e.name.upper() for e in typ) if issubclass(typ, Enum) else Configurable._EXPECTS.get(typ) or f'suitable for constructing class {typ.__name__}'
+
+@total_ordering
+class TimePoint:
     START = 'START'	# If timepoint is inside the file, start from the beginning of that file
     END = 'END'		# If timepoint is inside the file, end by the end of that file
     NEXT = 'NEXT'	# If timepoint is inside the file, start from the beginning of the next file
@@ -193,31 +252,31 @@ class TimePoint(object): # pylint: disable=R0903
     SKIP = 'SKIP'	# If timepoint is outside any file, start from the beginning (end by the end) of the next (previous) file
     KEEP = 'KEEP'	# If timepoint is outside any file, start from (end by) exactly that point (keep silence)
 
-    time = None
+    time: datetime
     fromThis = True	# If time is set, exactly one of fromStart/toEnd, fromNext/toPrev and cut must be True
     fromNext = False
     keep = False
 
-    def __init__(self, isStart, time, timeFormat, location = None):
+    def __init__(self, isStart, time, timeFormat, location = None) -> None:
         self.isStart = isStart
-        if type(time) == datetime:
+        if isinstance(time, datetime):
             self.time = time
             return
         args = time.split()
         if not args:
-            raise ValueError("Date not specified%s" % ((' at %s' % location) if location else ''))
+            raise ValueError(f"Date not specified{f' at {location}' if location else ''}")
         time = args[0]
         try:
             self.time = strptime(timeFormat, time)
         except ValueError:
-            raise ValueError("Format '%s' is not matched by the data%s: '%s'" % (timeFormat, (' at %s' % location) if location else '', time))
+            raise ValueError(f"Format '{timeFormat}' is not matched by the data{f' at {location}' if location else ''}: '{time}'")
         inSet = outSet = False
         for arg in (arg.upper() for arg in args[1:]):
             if arg in (self.START, self.END, self.NEXT, self.PREV, self.CUT):
                 if arg in (self.END, self.PREV) if isStart else (self.START, self.NEXT):
-                    raise ValueError("Unexpected %s time point specifier%s: '%s', allowed %s" % ('start' if isStart else 'end', (' at %s' % location) if location else '', arg, ', '.join((self.START, self.NEXT) if isStart else (self.END, self.PREV) + (self.CUT, self.SKIP, self.KEEP))))
+                    raise ValueError(f"Unexpected {'start' if isStart else 'end'} time point specifier{f' at {location}' if location else ''}: '{arg}', allowed {', '.join((self.START, self.NEXT) if isStart else (self.END, self.PREV) + (self.CUT, self.SKIP, self.KEEP))}")
                 if inSet:
-                    raise ValueError("Too many time point specifiers%s: '%s'" % ((' at %s' % location) if location else '', arg))
+                    raise ValueError(f"Too many time point specifiers{f' at {location}' if location else ''}: '{arg}'")
                 if arg in (self.NEXT, self.PREV):
                     self.fromThis = False
                     self.fromNext = True
@@ -226,61 +285,63 @@ class TimePoint(object): # pylint: disable=R0903
                 inSet = True
             elif arg in (self.SKIP, self.KEEP):
                 if outSet:
-                    raise ValueError("Too many time point specifiers%s: '%s'" % ((' at %s' % location) if location else '', arg))
+                    raise ValueError(f"Too many time point specifiers{f' at {location}' if location else ''}: '{arg}'")
                 self.keep = (arg == self.KEEP)
                 outSet = True
             else:
-                raise ValueError("Unknown time point specifier%s: '%s'" % ((' at %s' % location) if location else '', arg))
+                raise ValueError(f"Unknown time point specifier{f' at {location}' if location else ''}: '{arg}'")
 
-    def __cmp__(self, other):
-        return self.time.__cmp__(other.time)
+    def __lt__(self, other: Any) -> bool: # @total_ordering does the rest
+        if isinstance(other, TimePoint):
+            return self.time < other.time
+        return NotImplemented
 
-    def match(self, startTime, endTime):
+    def match(self, startTime: datetime, endTime: datetime) -> Optional[datetime]:
         if endTime < self.time: # before
             return None if self.isStart else (self.time if self.keep and self.time != datetime.max else endTime)
-        elif startTime <= self.time: # inside
+        if startTime <= self.time: # inside
             return (startTime if self.isStart else endTime) if self.fromThis else None if self.fromNext else self.time
-        else: # after
-            return (self.time if self.keep and self.time != datetime.min else startTime) if self.isStart else None
+        # after
+        return (self.time if self.keep and self.time != datetime.min else startTime) if self.isStart else None
 
-class InputFile(object):
+class InputFile:
     '''Holds information on the input audio file and methods to access it.'''
-    N_CHANNELS_NAMES = { 1: 'Mono', 2: 'Stereo' }
+    N_CHANNELS_NAMES: Final[ClassVar[Mapping[int, str]]] = { 1: 'Mono', 2: 'Stereo' }
 
     # ToDo: Change Audio library to support mp3 etc.
-    def __init__(self, fileName, startTime):
+    def __init__(self, fileName: str, startTime: str) -> None:
         self.fileName = fileName
         self.startTime = startTime
-        self.wave = wave.open(fileName)
+        self.wave: WaveReader = waveOpen(fileName)
         (self.nChannels, self.audioBytes, self.sampleRate, self.nSamples, self.compressionType, self.compressionName) = self.wave.getparams()
         if self.compressionType != 'NONE':
-            raise ValueError("Unknown compression type '%s' for file %s" % (self.compressionType, fileName))
+            raise ValueError(f"Unknown compression type '{self.compressionType}' for file {fileName}")
         self.audioBits = self.audioBytes * 8
         self.sampleSize = self.nChannels * self.audioBytes
         self.length = timedelta(seconds = float(self.nSamples) / self.sampleRate)
         self.endTime = self.startTime + self.length
         # ToDo: Maybe round length right in the fields?
         self.printLength = self.length + timedelta(microseconds = (self.length.microseconds + 5000) // 10000 * 10000 - self.length.microseconds)
-        self.name = "%s %dHz/%d-bit/%s %s" % (self.fileName, self.sampleRate, self.audioBits, self.N_CHANNELS_NAMES.get(self.nChannels) or '%d-channels' % self.nChannels, self.printLength)
+        self.name = f"{self.fileName} {self.sampleRate}Hz/{self.audioBits}-bit/{self.N_CHANNELS_NAMES.get(self.nChannels) or f'{self.nChannels}-channels'} {self.printLength}"
 
-    def contains(self, time):
+    def contains(self, time: str) -> bool:
         return self.startTime <= time < self.endTime
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
-    def __repr__(self):
-        return "InputFile(%s, %s)" % (repr(self.fileName), repr(self.startTime))
+    def __repr__(self) -> str:
+        return f"InputFile({self.fileName!r}, {self.startTime!r})"
 
-    def read(self, nSamples):
+    def read(self, nSamples: int) -> bytes:
         ret = self.wave.readframes(nSamples)
         assert len(ret) == nSamples * self.sampleSize
         return ret
 
-    def rewind(self):
+    def rewind(self) -> None:
         self.wave.rewind()
 
-    def close(self):
+    def close(self) -> None:
         self.wave.close()
 
 class Input(Configurable):
@@ -305,23 +366,23 @@ class Input(Configurable):
     endPoint = ''
     channels = ''
 
-    def __init__(self, config, section):
-        Configurable.__init__(self, config, section)
+    def __init__(self, config: ConfigParser, section: str) -> None:
+        super().__init__(config, section)
         self.section = section
         if not validateTimeFormat(self.fileNameFormat):
-            raise ValueError("Bad file name format at [%s].fileNameFormat: '%s'" % (section, self.fileNameFormat))
-        self.startPoint = TimePoint(True, *(self.startPoint, '[%s].startPoint' % section) if self.startPoint else datetime.min)
-        self.endPoint = TimePoint(False, *(self.endPoint, '[%s].endPoint' % section) if self.endPoint else datetime.max)
+            raise ValueError(f"Bad file name format at [{section}].fileNameFormat: '{self.fileNameFormat}'")
+        self.startPoint = TimePoint(True, *(self.startPoint, f'[{section}].startPoint') if self.startPoint else datetime.min)
+        self.endPoint = TimePoint(False, *(self.endPoint, f'[{section}].endPoint') if self.endPoint else datetime.max)
         if self.channels:
             try:
                 self.channels = self.CHANNEL_NUMBERS[self.channels.upper()]
             except KeyError:
-                raise ValueError("Bad channels specification at [%s].channels: '%s'" % (section, self.channels))
+                raise ValueError(f"Bad channels specification at [{section}].channels: '{self.channels}'")
         else:
             self.channels = self.STEREO
 
     @staticmethod
-    def getFileTimes(fileNameFormat): # generator
+    def getFileTimes(fileNameFormat: str) -> Iterator[Tuple[str, str]]:
         for fileName in glob(sub('%.', '*', fileNameFormat)):
             try:
                 yield (strptime(fileNameFormat, fileName), fileName)
@@ -329,10 +390,10 @@ class Input(Configurable):
                 pass
 
     @staticmethod
-    def preSortFiles(files, startTime, endTime): # generator
+    def preSortFiles(files: Iterable[Tuple[str, str]], startTime: str, endTime: str) -> Iterator[Tuple[str, str]]:
         assert startTime <= endTime
         started = False
-        prev = None
+        prev: Optional[Tuple[str, str]] = None
         for (time, fileName) in sorted(files):
             if not started:
                 if time >= startTime:
@@ -347,13 +408,14 @@ class Input(Configurable):
                 else:
                     return
 
-    def openFiles(self, files): # generator
-        prev = None
-        self.startTime = self.endTime = None
+    def openFiles(self, files: Iterable[Tuple[str, str]]) -> Iterator[InputFile]:
+        prev: Optional[InputFile] = None
+        self.startTime: Optional[datetime] = None
+        self.endTime: Optional[datetime] = None
         for (time, fileName) in files:
             f = InputFile(fileName, time)
             if prev and f.startTime < prev.endTime:
-                raise ValueError("Files intersect in time: %s start < %s end" % (f, prev))
+                raise ValueError(f"Files intersect in time: {f} start < {prev} end")
             prev = f
             if not self.startTime:
                 self.startTime = self.startPoint.match(f.startTime, f.endTime)
@@ -365,44 +427,44 @@ class Input(Configurable):
             yield f
             self.endTime = endTime
 
-    def load(self):
+    def load(self) -> None:
         self.files = tuple(self.openFiles(self.preSortFiles(self.getFileTimes(self.fileNameFormat), self.startPoint.time, self.endPoint.time)))
         if not self.files:
-            raise ValueError("No files found matching [%s].fileNameFormat: '%s'" % (self.section, self.fileNameFormat))
+            raise ValueError(f"No files found matching [{self.section}].fileNameFormat: '{self.fileNameFormat}'")
 
 class Output(Configurable):
 
-    def __init__(self, config, section):
-        Configurable.__init__(self, config, section)
+    def __init__(self, config: ConfigParser, section: str) -> None:
+        super().__init__(config, section)
 
 class Visual(Configurable):
 
     TAG = 'type'
 
-    def __new__(cls, config, section):
+    def __new__(cls, config: ConfigParser, section: str) -> Visual:
         if cls != Visual:
             raise ValueError("Visual.__new__() can only be used to create Visual instances")
         scn = Configurable(config, section, Configurable.IGNORE, defaults = {Visual.TAG: None}).config.get(Visual.TAG)
         if not scn:
-            raise ValueError("Can't create Visual: section [%s] doesn't contain option '%s'" % (section, Visual.TAG))
+            raise ValueError(f"Can't create Visual: section [{section}] doesn't contain option '{Visual.TAG}'")
         (section, className) = scn
         cls = globals().get(className[:1].upper() + className[1:])
-        if not cls or type(cls) != type or not issubclass(cls, Visual):
-            raise ValueError("Unknown Visual type at [%s].%s: '%s'" % (section, Visual.TAG, className))
+        if not cls or not isinstance(cls, type) or not issubclass(cls, Visual):
+            raise ValueError(f"Unknown Visual type at [{section}].{Visual.TAG}: '{className}'")
         return Configurable.__new__(cls)
 
-    def __init__(self, config, section):
-        Configurable.__init__(self, config, section)
+    def __init__(self, config: ConfigParser, section: str) -> None:
+        super().__init__(config, section)
 
 class Text(Visual):
-    def __init__(self, config, section):
-        Visual.__init__(self, config, section)
+    def __init__(self, config: ConfigParser, section: str) -> None:
+        super().__init__(config, section)
 
-class RCProcess: # pylint: disable=R0902
+class RCProcess: # pylint: disable=too-many-instance-attributes
     # Default parameter values
     logger = None
 
-    def __init__(self): # pylint: disable=R0915
+    def __init__(self) -> None: # pylint: disable=too-many-statements, too-complex
         '''Fully constructs class instance, including reading configuration file and configuring audio devices.'''
         try: # Reading command line options
             configFileName = DEFAULT_CONFIG_FILE_NAME
@@ -412,26 +474,26 @@ class RCProcess: # pylint: disable=R0902
                     configFileName = value.strip()
                 else:
                     usage()
-        except Exception, e:
-            usage("Error: %s\n" % e)
+        except Exception as e:
+            usage(e)
         try: # Reading config file and configuring logging
             config = ConfigParser()
-            config.readfp(open(configFileName)) # Using readfp(open()) to make sure file exists
+            config.read_file(open(configFileName)) # Using read_file(open()) to make sure file exists
             if config.has_section('loggers'):
-                fileConfig(configFileName)
+                fileConfig(config)
             self.logger = getLogger()
             if not self.logger.handlers: # Provide default logger
                 self.logger.addHandler(StreamHandler())
                 self.logger.setLevel(NOTSET)
             signal(SIGTERM, self.sigTerm)
-        except Exception, e:
-            print "%s\n\nConfig error: %s" % (TITLE, e)
-            exit(1)
+        except Exception as e:
+            print(f"{TITLE}\n\nConfig error: {e}")
+            sysExit(1)
         # Above this point, use print for diagnostics
         # From this point on, we have self.logger to use instead
         self.logger.info(TITLE)
-        self.logger.info("Using %s" % configFileName)
-        print # Empty line to console only
+        self.logger.info(f"Using {configFileName}")
+        print() # Empty line to console only
         try: # Applying configuration
             self.inputs = tuple(Input(config, section) for section in sorted(section for section in config.sections() if section.startswith('input')))
             if not self.inputs:
@@ -443,117 +505,138 @@ class RCProcess: # pylint: disable=R0902
                 try:
                     self.fileNameFormat = config.get(section, 'fileNameFormat').strip()
                     # ToDo: check that files exist
-                except NoOptionError: pass
+                except NoOptionError:
+                    pass
                 try:
                     self.startDate = config.get(section, 'startDate')
                     # ToDo: parse date
-                except NoOptionError: pass
+                except NoOptionError:
+                    pass
                 try:
                     self.endDate = config.get(section, 'endDate')
                     # ToDo: parse date
-                except NoOptionError: pass
+                except NoOptionError:
+                    pass
                 try:
                     self.video = config.getboolean(section, 'video')
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].video: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, config.get(section, 'video')))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].video: '{config.get(section, 'video')}', must be 1/yes/true/on or 0/no/false/off") from e
                 try:
                     self.audio = config.getboolean(section, 'audio')
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].audio: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, config.get(section, 'audio')))
-            except NoSectionError: pass
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].audio: '{config.get(section, 'audio')}', must be 1/yes/true/on or 0/no/false/off") from e
+            except NoSectionError:
+                pass
             try:
                 section = 'video'
                 # ToDo: specify video format somehow
                 try:
                     value = config.get(section, 'width')
                     self.width = int(value)
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].width: '%s', must be an integer" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].width: '{value}', must be an integer") from e
                 try:
                     value = config.get(section, 'height')
                     self.height = int(value)
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].height: '%s', must be an integer" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].height: '{value}', must be an integer") from e
                 try:
                     value = config.get(section, 'fps')
                     self.fps = float(value)
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].fps: '%s', must be a float" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].fps: '{value}', must be a float") from e
                 try:
                     value = config.get(section, 'background')
                     self.background = parseHTMLColor(value)
                     # ToDo: think about proper color representation
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].background: '%s', must be a #rrggbb string" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].background: '{value}', must be a #rrggbb string") from e
                 try:
                     self.previewVideo = config.getboolean(section, 'preview')
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].preview: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, config.get(section, 'preview')))
-            except NoSectionError: pass
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].preview: '{config.get(section, 'preview')}', must be 1/yes/true/on or 0/no/false/off") from e
+            except NoSectionError:
+                pass
             try:
                 section = 'audio'
                 try:
                     value = config.get(section, 'audioBits')
                     self.audioBits = int(value)
                     # ToDo: check it further
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].audioBits: '%s', must be an integer" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].audioBits: '{value}', must be an integer") from e
                 try:
                     value = config.get(section, 'sampleRate')
                     self.sampleRate = int(value)
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].sampleRate: '%s', must be an integer" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].sampleRate: '{value}', must be an integer") from e
                 try:
                     value = config.get(section, 'channels')
                     self.channels = int(value)
                     # ToDo: check it's positive
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].channels: '%s', must be an integer" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].channels: '{value}', must be an integer") from e
                 try:
                     self.previewAudio = config.getboolean(section, 'preview')
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].preview: '%s', must be 1/yes/true/on or 0/no/false/off" % (section, config.get(section, 'preview')))
-            except NoSectionError: pass
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].preview: '{config.get(section, 'preview')}', must be 1/yes/true/on or 0/no/false/off") from e
+            except NoSectionError:
+                pass
             try:
                 section = 'tuning'
                 try:
                     value = config.get(section, 'maxPauseLength')
                     self.maxPauseLength = float(value)
                     self.replacePauseLength = self.maxPauseLength
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].maxPauseLength: '%s', must be a float" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].maxPauseLength: '{value}', must be a float") from e
                 try:
                     value = config.get(section, 'replacePauseLength')
                     self.replacePauseLength = float(value)
                     # ToDo: check replacePauseLength <= maxPauseLength
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].replacePauseLength: '%s', must be a float" % (section, value))
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].replacePauseLength: '{value}', must be a float") from e
                 try:
                     value = config.get(section, 'trailLength')
                     self.trailLength = float(value)
-                except NoOptionError: pass
-                except ValueError:
-                    raise ValueError("Bad value for [%s].trailLength: '%s', must be a float" % (section, value))
-            except NoSectionError: pass
+                except NoOptionError:
+                    pass
+                except ValueError as e:
+                    raise ValueError(f"Bad value for [{section}].trailLength: '{value}', must be a float") from e
+            except NoSectionError:
+                pass
 
             # Validating configuration parameters
             if not self.fileNameFormat:
                 raise ValueError("Bad value for fileNameFormat: must be not empty")
             if not 0 <= self.volumeTreshold <= 100:
-                raise ValueError("Bad value for volumeTreshold: %.2f, must be 0-100" % self.volumeTreshold)
+                raise ValueError(f"Bad value for volumeTreshold: {self.volumeTreshold:2f}, must be 0-100")
             if self.maxPauseLength < 0:
                 self.maxPauseLength = 0
             if self.minRecordingLength < 0:
@@ -561,21 +644,21 @@ class RCProcess: # pylint: disable=R0902
             if self.trailLength < 0:
                 self.trailLength = 0
             if self.chunkSize < 1:
-                raise ValueError("Bad value for chunkSize: %d, must be 1 or more" % self.chunkSize)
+                raise ValueError(f"Bad value for chunkSize: {self.chunkSize}, must be 1 or more")
             if self.inputDevice:
                 if self.inputDevice == -1:
                     self.inputDevice = None
                 elif self.inputDevice < -1:
-                    raise ValueError("Bad value for input device: %d, must be -1 or more" % self.inputDevice)
+                    raise ValueError(f"Bad value for input device: {self.inputDevice}, must be -1 or more")
             if self.outputDevice:
                 if self.outputDevice == -1:
                     self.outputDevice = None
                 elif self.outputDevice < -1:
-                    raise ValueError("Bad value for output device: %d, must be -1 or more" % self.outputDevice)
+                    raise ValueError(f"Bad value for output device: {self.outputDevice}, must be -1 or more")
             if self.audioBits not in (8, 16, 32):
-                raise ValueError("Bad value for audioBits: %d, must be 8, 16, or 32" % self.audioBits)
+                raise ValueError(f"Bad value for audioBits: {self.audioBits}, must be 8, 16, or 32")
             if self.sampleRate < 1:
-                raise ValueError("Bad value for chunkSize: %d, must be positive" % self.sampleRate)
+                raise ValueError(f"Bad value for chunkSize: {self.sampleRate}, must be positive")
             try:
                 self.channel = int(channel)
                 if self.channel <= 0:
@@ -583,44 +666,38 @@ class RCProcess: # pylint: disable=R0902
             except ValueError:
                 self.channel = CHANNEL_NUMBERS.get(channel.strip().upper()) # Would be None if not found
             if self.channel == None:
-                raise ValueError("Bad value for channel: %s, must be LEFT/RIGHT/STEREO/ALL/MONO or a number of 1 or more" % channel)
-
-            # Accessing webcolors engine
-            try:
-                import webcolors # pylint: disable=W0621
-            except ImportError, e:
-                raise ImportError("%s: %s\nPlease install webcolors: http://pypi.python.org/pypi/webcolors/" % (e.__class__.__name__, e))
+                raise ValueError(f"Bad value for channel: {channel}, must be LEFT/RIGHT/STEREO/ALL/MONO or a number of 1 or more")
 
             # Accessing audio devices
             try:
                 if self.inputDevice != None:
                     inputDeviceInfo = self.audio.get_device_info_by_index(self.inputDevice)
-                    self.logger.info("Using input device %s" % self.deviceInfo(inputDeviceInfo, False))
+                    self.logger.info(f"Using input device {self.deviceInfo(inputDeviceInfo, False)}")
                 else:
                     inputDeviceInfo = self.audio.get_default_input_device_info()
-                    self.logger.info("Using default input device %s" % self.deviceInfo(inputDeviceInfo, False))
+                    self.logger.info(f"Using default input device {self.deviceInfo(inputDeviceInfo, False)}")
             except ValueError:
-                raise ValueError("%s is not in fact an input device" % ("Input device %d" % self.inputDevice if self.inputDevice != None else "Default input device"))
-            except IOError, e:
-                raise IOError("Can't access %s: %s" % ("input device %d" % self.inputDevice if self.inputDevice != None else "default input device", e))
+                raise ValueError(f"{f'Input device {self.inputDevice}' if self.inputDevice != None else 'Default input device'} is not in fact an input device")
+            except IOError as e:
+                raise IOError(f"Can't access {f'input device {self.inputDevice}' if self.inputDevice != None else 'default input device'}: {e}")
             try:
                 if self.outputDevice != None:
                     outputDeviceInfo = self.audio.get_device_info_by_index(self.outputDevice)
-                    self.logger.info("Using output device %s" % self.deviceInfo(outputDeviceInfo, True))
+                    self.logger.info(f"Using output device {self.deviceInfo(outputDeviceInfo, True)}")
                 else:
                     outputDeviceInfo = self.audio.get_default_output_device_info()
-                    self.logger.info("Using default output device %s" % self.deviceInfo(outputDeviceInfo, True))
+                    self.logger.info(f"Using default output device {self.deviceInfo(outputDeviceInfo, True)}")
             except ValueError:
-                raise ValueError("%s is not in fact an output device" % ("output device %d" % self.outputDevice if self.outputDevice != None else "Default output device"))
-            except IOError, e:
-                raise IOError("Can't access %s: %s" % ("output device %d" % self.outputDevice if self.outputDevice != None else "default output device", e))
-            print # Empty line to console only
+                raise ValueError(f"{f'Output device {self.outputDevice}' if self.outputDevice != None else 'Default output device'} is not in fact an output device")
+            except IOError as e:
+                raise IOError(f"Can't access {f'output device {self.outputDevice}' if self.outputDevice != None else 'default output device'}: {e}")
+            print() # Empty line to console only
 
             # Calculating derivative paratemers
             self.numInputChannels = 1 if self.channel == MONO else inputDeviceInfo['maxInputChannels']
             assert self.numInputChannels > 0
             if self.channel > self.numInputChannels:
-                raise ValueError("Bad value for channel: %d, must be no more than %d" % (self.channel, self.numInputChannels))
+                raise ValueError(f"Bad value for channel: {self.channel}, must be no more than {self.numInputChannels}")
             self.numOutputChannels = self.numInputChannels if self.channel == STEREO else 1
             assert self.numOutputChannels > 0
 
@@ -646,16 +723,16 @@ class RCProcess: # pylint: disable=R0902
             self.closeOutputStream()
 
             # Printing configuration info
-            self.logger.info("Recording %dHz/%d-bit/%s to %s" % (self.sampleRate, self.audioBits, CHANNEL_NAMES.get(self.channel) or "channel %d" % self.channel, self.fileNameFormat))
-            self.logger.info("Volume threshold %.2f%%, max pause %.1f seconds, min recording length %.1f seconds, trail %.1f seconds" % (self.volumeTreshold, self.maxPauseLength, self.minRecordingLength, self.trailLength))
-            self.logger.info("Monitor is %s" % ('ON' if self.monitor else 'OFF'))
-            print "Type 'help' for console commands reference" # Using print for non-functional logging
-            print # Empty line to console only
-        except Exception, e:
-            self.logger.error("Configuration error: %s" % e)
-            exit(1)
+            self.logger.info(f"Recording {self.sampleRate}Hz/{self.audioBits}-bit/{CHANNEL_NAMES.get(self.channel) or f'channel {self.channel}'} to {self.fileNameFormat}")
+            self.logger.info(f"Volume threshold {self.volumeTreshold:2f}, max pause {self.maxPauseLength:1f} seconds, min recording length {self.minRecordingLength:1f} seconds, trail {self.trailLength:1f} seconds")
+            self.logger.info(f"Monitor is {'ON' if self.monitor else 'OFF'}")
+            print("Type 'help' for console commands reference") # Using print for non-functional logging
+            print() # Empty line to console only
+        except Exception as e:
+            self.logger.error(f"Configuration error: {e}")
+            sysExit(1)
 
-    def run(self):
+    def run(self) -> None:
         '''Runs main audio processing loop.'''
         self.audioFile = None
         self.sampleLength = 0
@@ -679,15 +756,14 @@ class RCProcess: # pylint: disable=R0902
                 assert len(data) == self.inputBlockSize
 
                 if self.channel not in (MONO, STEREO): # Extract the data for particular channel
-                    data = ''.join(data[i : i + self.audioBytes] for i in xrange((self.channel - 1) * self.audioBytes, len(data), self.numInputChannels * self.audioBytes))
+                    data = ''.join(data[i : i + self.audioBytes] for i in range((self.channel - 1) * self.audioBytes, len(data), self.numInputChannels * self.audioBytes))
                 assert len(data) == self.outputBlockSize
 
                 if self.monitor: # Provide monitor output
                     self.writeAudioData(data)
 
                 # Gathering volume statistics
-                volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in xrange(0, len(data), self.audioBytes)) * 100 + self.maxVolume // 2) / self.maxVolume
-                # print "%.2f" % volume
+                volume = (mean(abs(unpack(self.packFormat, data[i : i + self.audioBytes])[0]) for i in range(0, len(data), self.audioBytes)) * 100 + self.maxVolume // 2) / self.maxVolume
                 self.lastSecondVolumes[chunkInSecond] = volume # Logging the sound volume during the last second
                 chunkInSecond = (chunkInSecond + 1) % self.chunksInSecond
 
@@ -695,7 +771,7 @@ class RCProcess: # pylint: disable=R0902
                     if not self.recording: # Start recording
                         # ToDo: check inputStream.get_time(), latency etc. to provide exact time stamp for file naming
                         self.fileName = strftime(self.fileNameFormat)
-                        self.logger.info("%s recording started" % self.fileName)
+                        self.logger.info(f"{self.fileName} recording started")
                         self.recording = True
                         self.sample = ''
                         self.localMaxVolume = volume
@@ -713,29 +789,29 @@ class RCProcess: # pylint: disable=R0902
                     if chunksOfSilence > self.chunksToStop: # Enough silence to stop recording
                         if self.quitAfterRecording:
                             self.inLoop = False
-        except Exception, e:
-            self.logger.warning("Processing error: %s: %s" % (e.__class__.__name__, e))
+        except Exception as e:
+            self.logger.warning(f"Processing error: {type(e).__name__}: {e}")
         except KeyboardInterrupt:
             self.logger.warning("Ctrl-C detected, exiting")
         self.inLoop = False
         self.logger.info("Done")
 
-    def sigTerm(self, signum, frame): # pylint: disable=W0613
+    def sigTerm(self, _signum: int, _frame: FrameType) -> None:
         '''SIGTERM handler.'''
         self.logger.warning("SIGTERM caught, exiting")
         self.inLoop = False
 
-def usage(error = None):
+def usage(error: Optional[Exception] = None) -> NoReturn:
     '''Prints usage information (preceded by optional error message) and exits with code 2.'''
-    print "%s\n" % TITLE
+    print(f"{TITLE}\n")
     if error:
-        print error
-    print "Usage: python RCProcess.py [-c configFileName] [-h]"
-    print "\t-c --config <filename>   Configuration file to use, defaults to %s" % DEFAULT_CONFIG_FILE_NAME
-    print "\t-h --help                Show this help message"
-    exit(2)
+        print(f"Error: {error}\n")
+    print("Usage: python RCProcess.py [-c configFileName] [-h]")
+    print(f"\t-c --config <filename>   Configuration file to use, defaults to {DEFAULT_CONFIG_FILE_NAME}")
+    print("\t-h --help                Show this help message")
+    sysExit(2)
 
-def main():
+def main() -> None:
     RCProcess().run()
 
 if __name__ == '__main__':
