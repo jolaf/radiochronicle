@@ -49,10 +49,10 @@ class RadioChronicle:
     # Default parameter values
     fileNameFormat = './RC-%Y%m%d-%H%M%S.wav'
     monitor = False
-    volumeTreshold = 10.0
-    maxPauseLength = 2.0
-    trailLength = 0.1
-    minRecordingLength = 0.0
+    volumeTreshold = 5.0
+    maxPauseLength = 1.0
+    trailLength = 1.0
+    minRecordingLength = 0.5
     chunkSize = 1024
     inputDevice: Optional[int] = None
     outputDevice: Optional[int] = None
