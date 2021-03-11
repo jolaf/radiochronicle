@@ -327,7 +327,7 @@ class RadioChronicle:
                     outputDevices.append(device)
                 if device['maxInputChannels']:
                     inputDevices.append(device)
-            return '\n'.join(("Detected audio input devices:", '\n'.join(self.deviceInfo(device) for device in inputDevices), "Detected audio output devices:", '\n'.join(self.deviceInfo(device) for device in outputDevices)))
+            return '\n'.join(("Detected audio input devices:", '\n'.join(self.deviceInfo(device) for device in inputDevices), "\nDetected audio output devices:", '\n'.join(self.deviceInfo(device) for device in outputDevices)))
         # else Return info on a particular device
         if isinstance(device, int):
             device = self.audio.get_device_info_by_index(device)
