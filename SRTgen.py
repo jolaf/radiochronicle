@@ -55,7 +55,7 @@ def main(args: Sequence[str]) -> None:
     assert m # Should always match
     srtFileName = f'{m.group(1)}.srt'
     realTime = datetime.strptime(wavFileName, WAV_FILENAME_FORMAT)
-    realTime += timedelta(hours = 2) # На «Обитаемых островах» ноутбук был настроен на неверную таймзону
+    # realTime += timedelta(hours = 2) # На «Обитаемых островах» ноутбук был настроен на неверную таймзону
     fileTime = datetime(1, 1, 1) # We don't actually use the date part
     srtEnd = fileTime + timedelta(seconds = length)
     maxN = int(length + 1 if length % 1 else length)
